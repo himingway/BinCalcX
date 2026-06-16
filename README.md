@@ -94,6 +94,8 @@ clamping**, and the T/Z/Y/X display ordering.
 | `~` / `!` | NOT | `Delete` | CLx |
 | `<` `>` | SHL / SHR | `R` | roll |
 | `_` / `N` | negate | `S` | swap X↔Y |
+| `Ctrl+C` | copy X (active base) | `Ctrl+V` | paste number → X |
+| `Ctrl+T` | toggle always-on-top | | |
 
 Theme and bit width are toolbar-controlled (mouse).
 

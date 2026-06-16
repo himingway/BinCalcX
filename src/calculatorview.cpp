@@ -2,17 +2,21 @@
 
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QEvent>
 #include <QFont>
 #include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QLabel>
 #include <QShortcut>
 #include <QSignalBlocker>
 #include <QStyle>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -116,6 +120,7 @@ void CalculatorView::setSignedMode(bool enabled)
 
 void CalculatorView::setActiveBase(const QString &baseToken)
 {
+    activeBase_ = baseToken;
     for (auto &kv : baseButtons_)
         kv.second->setChecked(kv.first == baseToken);
     for (auto &kv : baseFields_) {
@@ -204,6 +209,18 @@ bool CalculatorView::eventFilter(QObject *watched, QEvent *event)
 
 void CalculatorView::keyPressEvent(QKeyEvent *event)
 {
+    // Clipboard: copy the active-base value / paste a number into X.
+    if (event->matches(QKeySequence::Copy)) {
+        copyActiveValue();
+        return;
+    }
+    if (event->matches(QKeySequence::Paste)) {
+        const QString clip = QGuiApplication::clipboard()->text();
+        if (!clip.isEmpty())
+            emit pasteRequested(clip);
+        return;
+    }
+
     const QString text = event->text();
     const int key = event->key();
 
@@ -236,6 +253,24 @@ void CalculatorView::keyPressEvent(QKeyEvent *event)
     default: break;
     }
     QWidget::keyPressEvent(event);
+}
+
+void CalculatorView::copyActiveValue()
+{
+    // Copy the active base's value, clean (no grouping separators) so it pastes
+    // straight into code. BIN has no text field, so fall back to decimal.
+    QString text;
+    const auto it = baseFields_.find(activeBase_);
+    text = (it != baseFields_.end()) ? it->second->text() : decimalDisplay_->text();
+    text.remove(' ');
+    QGuiApplication::clipboard()->setText(text);
+    setStatusMessage(tr("Copied: %1").arg(text));
+}
+
+void CalculatorView::setStatusMessage(const QString &msg)
+{
+    statusLabel_->setText(msg);
+    statusTimer_->start(2200);   // auto-clear, same line the hover readout uses
 }
 
 // ---------------------------------------------------------------------------
@@ -600,6 +635,11 @@ void CalculatorView::buildLayout()
     QFont sf = statusLabel_->font(); sf.setPointSize(8); statusLabel_->setFont(sf);
     statusLabel_->setMinimumHeight(16);
     root->addWidget(statusLabel_);
+
+    // Auto-clears the status line (used by hover readout + clipboard feedback).
+    statusTimer_ = new QTimer(this);
+    statusTimer_->setSingleShot(true);
+    connect(statusTimer_, &QTimer::timeout, statusLabel_, &QLabel::clear);
 
     // compact, capped window — lock to content after layout settles
     setActiveBase("DEC");

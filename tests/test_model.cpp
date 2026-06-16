@@ -153,6 +153,27 @@ int main()
     m.inputDigit("F"); m.inputDigit("F"); m.inputDigit("F"); m.inputDigit("F");
     check(m.decimalString().toStdString() == "-1", "16-bit: FFFF signed -1", 0, 0);
 
+    // --- clipboard: loadFromText — prefixes, separators, sign, width masking ---
+    // (capture ok/value separately: arg-eval order would otherwise print a
+    //  stale register alongside a passing check.)
+    m.setBitWidth(64);
+    m.setBase(CalculatorModel::Base::Decimal);
+    { const bool ok = m.loadFromText("0xFF");     const long long g = (long long)m.xRegister();
+      check(ok && g == 0xFF, "paste 0xFF -> 255", g, 0xFF); }
+    { const bool ok = m.loadFromText("0b1010");   const long long g = (long long)m.xRegister();
+      check(ok && g == 10, "paste 0b1010 -> 10", g, 10); }
+    { const bool ok = m.loadFromText("1,000");    const long long g = (long long)m.xRegister();
+      check(ok && g == 1000, "paste '1,000' -> 1000", g, 1000); }
+    m.setBase(CalculatorModel::Base::Hexadecimal);
+    { const bool ok = m.loadFromText("DEAD BEEF"); const long long g = (long long)m.xRegister();
+      check(ok && g == 0xDEADBEEF, "paste 'DEAD BEEF' -> DEADBEEF", g, 0xDEADBEEF); }
+    m.setBitWidth(8);
+    { const bool ok = m.loadFromText("-1");       const long long g = (long long)m.xRegister();
+      check(ok && g == 0xFF, "paste -1 (8-bit) -> FF", g, 0xFF); }
+    { const bool ok = m.loadFromText("0x1FF");    const long long g = (long long)m.xRegister();
+      check(ok && g == 0xFF, "paste 0x1FF masked 8-bit -> FF", g, 0xFF); }
+    check(!m.loadFromText("nope"), "paste invalid -> rejected", 0, 0);
+
     m.setBitWidth(64);   // tidy restore
 
     std::printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);

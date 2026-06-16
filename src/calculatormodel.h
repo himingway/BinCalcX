@@ -58,6 +58,12 @@ public slots:
     void inputDigit(const QString &digit);
     void backspace();
 
+    /// Parse a pasted string into X. Honours C-style base prefixes
+    /// (0x/0X, 0b/0B, 0o/0O) — otherwise the current base — and strips digit
+    /// separators (spaces, underscores, commas) and a leading sign. The value
+    /// is masked to the active width; returns false if not a valid number.
+    bool loadFromText(const QString &text);
+
     // stack / register commands
     void clearX();        // CLx
     void clearAll();      // CLR

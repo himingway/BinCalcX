@@ -178,6 +178,52 @@ void CalculatorModel::backspace()
     refresh();
 }
 
+bool CalculatorModel::loadFromText(const QString &raw)
+{
+    QString s = raw.trimmed();
+    if (s.isEmpty())
+        return false;
+
+    // Leading sign.
+    bool negative = false;
+    if (s.startsWith('-')) { negative = true; s = s.mid(1).trimmed(); }
+    else if (s.startsWith('+')) { s = s.mid(1).trimmed(); }
+    if (s.isEmpty())
+        return false;
+
+    // C-style base prefix overrides the active base; default to it otherwise.
+    int radix = base_ == Base::Hexadecimal ? 16 :
+                base_ == Base::Decimal     ? 10 :
+                base_ == Base::Octal       ? 8  : 2;
+    if (s.size() >= 2 && s.at(0) == '0') {
+        const QChar p = s.at(1).toLower();
+        if (p == 'x')      { radix = 16; s = s.mid(2); }
+        else if (p == 'b') { radix = 2;  s = s.mid(2); }
+        else if (p == 'o') { radix = 8;  s = s.mid(2); }
+    }
+
+    // Drop the digit separators the model itself emits (spaces) plus the ones
+    // other tools copy out (underscores, commas).
+    s.remove(' ');
+    s.remove('_');
+    s.remove(',');
+    if (s.isEmpty())
+        return false;
+
+    bool ok = false;
+    const quint64 v = s.toULongLong(&ok, radix);
+    if (!ok)
+        return false;
+
+    const quint64 finalv = negative ? static_cast<quint64>(-static_cast<qint64>(v)) : v;
+    stack_[0] = normalize(static_cast<qint64>(finalv));   // masked to width / sign
+    buffer_ = QStringLiteral("0");
+    entering_ = false;
+    liftOnNext_ = true;   // a following typed digit lifts the stack, preserving this
+    refresh();
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // stack / register commands
 // ---------------------------------------------------------------------------

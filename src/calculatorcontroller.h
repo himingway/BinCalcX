@@ -34,6 +34,7 @@ private slots:
     void onBitWidthChanged(int width);
     void onTheme(bool dark);
     void onStayOnTop(bool on);
+    void onPaste(const QString &text);
     void refreshView();
 
 private:

@@ -20,6 +20,7 @@ CalculatorController::CalculatorController(CalculatorModel &model,
     connect(&view_, &CalculatorView::bitWidthRequested, this, &CalculatorController::onBitWidthRequested);
     connect(&view_, &CalculatorView::themeToggled,      this, &CalculatorController::onTheme);
     connect(&view_, &CalculatorView::stayOnTopToggled,  this, &CalculatorController::onStayOnTop);
+    connect(&view_, &CalculatorView::pasteRequested,    this, &CalculatorController::onPaste);
 
     // Model changes -> View refresh
     connect(&model_, &CalculatorModel::displayChanged,  this, &CalculatorController::refreshView);
@@ -95,6 +96,14 @@ void CalculatorController::onTheme(bool dark)
 void CalculatorController::onStayOnTop(bool on)
 {
     settings_->setValue("ui/stayOnTop", on);
+}
+
+void CalculatorController::onPaste(const QString &text)
+{
+    // Model parses + loads X and emits displayChanged (→ refreshView). We only
+    // surface success/failure on the status line.
+    view_.setStatusMessage(model_.loadFromText(text) ? tr("Pasted")
+                                                     : tr("Paste: not a number"));
 }
 
 // ---------------------------------------------------------------------------

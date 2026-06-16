@@ -11,6 +11,7 @@ class QButtonGroup;
 class QCheckBox;
 class QGridLayout;
 class QLabel;
+class QTimer;
 class QToolButton;
 
 /**
@@ -49,6 +50,7 @@ public:
     void setActiveWidth(int width);                  // grey-out cells >= width
     void setTheme(bool dark);
     void setStayOnTop(bool on);
+    void setStatusMessage(const QString &msg);   // brief transient line (paste, …)
 
 signals:
     void digitPressed(const QString &digit);
@@ -60,6 +62,7 @@ signals:
     void bitWidthRequested(int width);
     void themeToggled(bool dark);
     void stayOnTopToggled(bool on);
+    void pasteRequested(const QString &text);    // clipboard text → Model
 
 protected:
     void keyPressEvent(QKeyEvent *event) override;
@@ -92,9 +95,12 @@ private:
 
     bool    dark_         = true;
     QString accent_;        // current base-dependent accent colour
+    QString activeBase_ = QStringLiteral("DEC");   // for clipboard copy target
     int     activeWidth_   = 64;
+    QTimer *statusTimer_ = nullptr;                 // auto-clears the status line
 
     void buildLayout();
+    void copyActiveValue();       // Ctrl+C → clipboard, current base
     void applyTheme(bool dark, const QString &accent);
     static QString accentForBase(const QString &baseToken, bool dark = true);
 

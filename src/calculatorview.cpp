@@ -14,6 +14,7 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QShortcut>
+#include <QShowEvent>
 #include <QSignalBlocker>
 #include <QStyle>
 #include <QTimer>
@@ -97,6 +98,21 @@ CalculatorView::CalculatorView(QWidget *parent)
     applyTheme(dark_, accent_);
 }
 
+void CalculatorView::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    if (firstShow_) {
+        firstShow_ = false;
+        // The accent stylesheet is first applied during construction, before
+        // this window is realised. On some platforms that first sheet doesn't
+        // fully propagate to dynamically-styled children (the bit cells), so
+        // the initial paint could land on a stale accent. Re-apply once we're
+        // actually visible so the active base's colour (e.g. HEX green) is
+        // correct from the very first frame.
+        applyTheme(dark_, accent_);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // result-push API
 // ---------------------------------------------------------------------------
@@ -121,15 +137,24 @@ void CalculatorView::setSignedMode(bool enabled)
 void CalculatorView::setActiveBase(const QString &baseToken)
 {
     activeBase_ = baseToken;
-    for (auto &kv : baseButtons_)
+    // Accent + stylesheet FIRST, then flip checked state and re-polish the base
+    // buttons/fields. Polishing against the already-updated sheet is what makes
+    // the active accent (e.g. HEX green) appear on the very first paint — the
+    // old order polished against the previous base's colour, so startup showed
+    // the previous accent until a click forced a repaint.
+    accent_ = accentForBase(baseToken, dark_);
+    applyTheme(dark_, accent_);          // re-cascade accent onto bits/field/ENTER/X
+
+    for (auto &kv : baseButtons_) {
         kv.second->setChecked(kv.first == baseToken);
+        kv.second->style()->unpolish(kv.second);   // force :checked to re-resolve
+        kv.second->style()->polish(kv.second);
+    }
     for (auto &kv : baseFields_) {
         kv.second->setObjectName(kv.first == baseToken ? "fieldActive" : "");
         kv.second->style()->unpolish(kv.second);
         kv.second->style()->polish(kv.second);
     }
-    accent_ = accentForBase(baseToken, dark_);
-    applyTheme(dark_, accent_);          // re-cascade accent onto bits/field/ENTER/X
     applyDigitEnables(baseToken);
 }
 

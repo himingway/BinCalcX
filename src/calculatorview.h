@@ -12,6 +12,7 @@ class QCheckBox;
 class QGridLayout;
 class QLabel;
 class QTimer;
+class QShowEvent;
 class QToolButton;
 
 /**
@@ -67,6 +68,7 @@ signals:
 protected:
     void keyPressEvent(QKeyEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void showEvent(QShowEvent *event) override;
 
 private slots:
     void onThemeButton(bool checked);
@@ -98,6 +100,7 @@ private:
     QString activeBase_ = QStringLiteral("DEC");   // for clipboard copy target
     int     activeWidth_   = 64;
     QTimer *statusTimer_ = nullptr;                 // auto-clears the status line
+    bool    firstShow_    = true;                    // re-apply theme once realised
 
     void buildLayout();
     void copyActiveValue();       // Ctrl+C → clipboard, current base

@@ -1,5 +1,8 @@
 # BinCalcX — Programmer's Calculator
 
+[![CI](https://github.com/himingway/BinCalcX/actions/workflows/ci.yml/badge.svg)](https://github.com/himingway/BinCalcX/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A cross-platform (Windows / Linux) RPN programmer's calculator built with
 **C++17** and **Qt 6 (Widgets)**, structured as a clean **MVC** application.
 Geared toward chip engineers: VS Code-grade theming, a textless 64-bit grid,

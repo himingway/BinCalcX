@@ -1,0 +1,53 @@
+name: Release
+
+# Publishes a GitHub Release with a ready-to-run Windows build whenever a
+# version tag (v*) is pushed. End users get a zip: BinCalc.exe + Qt DLLs +
+# the platforms plugin — unzip and double-click, no install needed.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write        # required to create the Release and upload assets
+
+jobs:
+  windows:
+    name: Windows build → Release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt 6 (MSVC)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.*'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
+          cache: true
+
+      - name: Configure & build (Release)
+        run: |
+          cmake -S . -B build
+          cmake --build build --config Release --parallel
+
+      - name: Collect runtime deps (windeployqt)
+        shell: bash
+        run: |
+          windeployqt --release --no-translations --no-system-d3d-compiler \
+            --no-opengl-sw build/Release/BinCalc.exe
+
+      - name: Zip the package
+        shell: pwsh
+        run: |
+          Compress-Archive -Path build/Release/* `
+            -DestinationPath "BinCalc-$env:GITHUB_REF_NAME-windows-x64.zip"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: BinCalc-*-windows-x64.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: false

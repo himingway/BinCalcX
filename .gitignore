@@ -1,0 +1,45 @@
+# --- Binaries ---
+/BinCalc
+/BinCalc.exe
+/test_model
+/test_model.exe
+*.exe
+
+# --- Compiled objects ---
+*.o
+*.obj
+
+# --- Qt generated (moc / qrc / uic) ---
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+*.moc
+moc_predefs.h
+
+# --- Build directories ---
+/build/
+/out/
+*-build-*/
+
+# --- qmake ---
+Makefile
+Makefile.Debug
+Makefile.Release
+*.pro.user
+*.pro.user.*
+
+# --- CMake ---
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CMakeUserPresets.json
+compile_commands.json
+
+# --- IDE / editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store

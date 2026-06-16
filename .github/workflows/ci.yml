@@ -69,3 +69,43 @@ jobs:
           name: BinCalc-windows-x64
           path: build/Release/
           if-no-files-found: error
+
+  # ----------------------------------------------- windows (single static file)
+  windows-static:
+    name: Windows · single-file static exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSYS2 (MinGW64 + static Qt6)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-qt6-static
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-upx
+
+      - name: Configure & build (static) + test
+        shell: msys2 {0}
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_PREFIX_PATH=/mingw64 -DBINCALC_BUILD_TESTS=ON
+          cmake --build build
+          ctest --test-dir build --output-on-failure
+
+      - name: Strip + UPX → one small file
+        shell: msys2 {0}
+        run: |
+          strip build/BinCalc.exe
+          upx --best --lzma build/BinCalc.exe || true
+          ls -lh build/BinCalc.exe
+
+      - name: Upload single-file exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: BinCalc-windows-static
+          path: build/BinCalc.exe
+          if-no-files-found: error

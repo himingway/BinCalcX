@@ -9,7 +9,11 @@ set(CMAKE_AUTOUIC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
 
-add_executable(BinCalc WIN32
+# qt_add_executable (not plain add_executable) so that under a STATIC Qt build
+# the qwindows platform plugin is auto-linked in — otherwise a static .exe fails
+# at startup with "could not find the Qt platform plugin windows". For normal
+# shared builds it behaves identically to add_executable.
+qt_add_executable(BinCalc WIN32
     src/main.cpp
     src/calculatormodel.cpp
     src/calculatorview.cpp

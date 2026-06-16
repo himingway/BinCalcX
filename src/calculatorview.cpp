@@ -10,6 +10,7 @@
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QShortcut>
 #include <QSignalBlocker>
 #include <QStyle>
 #include <QToolButton>
@@ -162,7 +163,13 @@ void CalculatorView::setTheme(bool dark)
 
 void CalculatorView::setStayOnTop(bool on)
 {
-    stayOnTopCheckbox_->setChecked(on);   // toggled handler applies the window flag
+    // Set the flag directly here (and block the checkbox) rather than going
+    // through its toggled handler. During preference restore this runs *before*
+    // the first show(), so the window is born on-top — no hide/show flash at
+    // startup — and we skip a redundant settings write-back via stayOnTopToggled.
+    QSignalBlocker b(stayOnTopCheckbox_);
+    stayOnTopCheckbox_->setChecked(on);
+    setWindowFlag(Qt::WindowStaysOnTopHint, on);
 }
 
 void CalculatorView::onThemeButton(bool checked)
@@ -410,15 +417,29 @@ void CalculatorView::buildLayout()
 
     tb->addSpacing(16);
 
-    // [Pin] stay-on-top
+    // [Pin] stay-on-top — toggle via the toolbar checkbox or Ctrl+T.
     stayOnTopCheckbox_ = new QCheckBox(tr("Top"), toolbar);
     stayOnTopCheckbox_->setFocusPolicy(Qt::NoFocus);
+    stayOnTopCheckbox_->setToolTip(tr("Keep window on top  (Ctrl+T)"));
     connect(stayOnTopCheckbox_, &QCheckBox::toggled, this, [this](bool on){
+        // WindowStaysOnTopHint forces a native-window recreate; only re-show
+        // when already visible, then reclaim the foreground so the toggle
+        // neither dumps focus nor flashes.
+        const bool wasVisible = isVisible();
         setWindowFlag(Qt::WindowStaysOnTopHint, on);
-        show();
+        if (wasVisible) {
+            show();
+            raise();
+            activateWindow();
+        }
         emit stayOnTopToggled(on);
     });
     tb->addWidget(stayOnTopCheckbox_);
+
+    auto pinShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_T), this);
+    connect(pinShortcut, &QShortcut::activated, this, [this]{
+        stayOnTopCheckbox_->setChecked(!stayOnTopCheckbox_->isChecked());
+    });
     root->addWidget(toolbar);
 
     // --- top: bit grid (left) + RPN stack (right) ---

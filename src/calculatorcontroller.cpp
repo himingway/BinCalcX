@@ -140,7 +140,7 @@ void CalculatorController::restorePreferences()
                                          static_cast<int>(CalculatorModel::Base::Decimal)).toInt();
     model_.setBase(static_cast<CalculatorModel::Base>(baseInt));
     view_.setActiveBase(baseToken(static_cast<CalculatorModel::Base>(baseInt)));
-    model_.setSignedMode(settings_->value("calc/signed", true).toBool());
+    model_.setSignedMode(settings_->value("calc/signed", false).toBool());
 
     // window
     view_.setStayOnTop(settings_->value("ui/stayOnTop", false).toBool());

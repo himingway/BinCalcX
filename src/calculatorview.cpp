@@ -598,7 +598,7 @@ void CalculatorView::buildLayout()
     decimalDisplay_ = new QLineEdit(this); decimalDisplay_->setReadOnly(true);
     row2->addWidget(decimalDisplay_, 3);
     signedCheckbox_ = new QCheckBox(tr("Signed"), this);
-    signedCheckbox_->setChecked(true);
+    signedCheckbox_->setChecked(false);
     signedCheckbox_->setFocusPolicy(Qt::NoFocus);
     connect(signedCheckbox_, &QCheckBox::toggled, this, &CalculatorView::signedModeChanged);
     row2->addWidget(signedCheckbox_);

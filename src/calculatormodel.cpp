@@ -44,7 +44,7 @@ CalculatorModel::CalculatorModel(QObject *parent)
     , entering_(false)
     , liftOnNext_(true)
     , base_(Base::Decimal)
-    , signed_(true)
+    , signed_(false)
     , bitWidth_(64)
 {
 }

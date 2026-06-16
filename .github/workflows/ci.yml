@@ -92,8 +92,16 @@ jobs:
       - name: Configure & build (static) + test
         shell: msys2 {0}
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_PREFIX_PATH=/mingw64 -DBINCALC_BUILD_TESTS=ON
+          # MSYS2 ships qt6-static under its own prefix (/mingw64/qt6-static);
+          # use its qt-cmake-static wrapper so the bundled static deps
+          # (libpng/freetype/...) resolve. Fall back to plain cmake + that prefix.
+          if [ -x /mingw64/qt6-static/bin/qt-cmake-static ]; then
+            /mingw64/qt6-static/bin/qt-cmake-static -S . -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release -DBINCALC_BUILD_TESTS=ON
+          else
+            cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_PREFIX_PATH=/mingw64/qt6-static -DBINCALC_BUILD_TESTS=ON
+          fi
           cmake --build build
           ctest --test-dir build --output-on-failure
 

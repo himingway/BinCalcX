@@ -98,3 +98,7 @@ Theme and bit width are toolbar-controlled (mouse).
 
 `12 ENTER 5 +` → `17`. · `FF XOR 0F` (HEX) → `F0`. · Width 8, `200 ENTER 100 +` → `44`.
 
+## License
+
+MIT — see [LICENSE](LICENSE).
+

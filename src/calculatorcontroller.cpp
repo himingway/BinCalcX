@@ -124,6 +124,7 @@ void CalculatorController::refreshView()
     view_.setHexText(model_.hexadecimalString());
     view_.setOctalText(model_.octalString());
     view_.setDecimalText(model_.decimalString());
+    view_.setBinaryText(model_.binaryString());
     view_.setCharText(model_.charString());
     view_.setStackValues(model_.stackStrings());
     view_.refreshBits(model_.xRegister());

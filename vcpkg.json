@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "bincalc",
+  "version-string": "1.0.0",
+  "description": "BinCalcX programmer's calculator",
+  "$comment": "Pin every vcpkg port to the versions at this vcpkg registry release (2026.05.25). Bumping this SHA is what moves Qt to a new minor/patch — it keeps release builds reproducible instead of floating on vcpkg HEAD. Only consumed when CMake runs with the vcpkg toolchain (the Release workflow); qmake/local builds and the install-qt-action CI build ignore it.",
+  "builtin-baseline": "d015e31e90838a4c9dfa3eed45979bc70d9357fc",
+  "dependencies": [
+    {
+      "name": "qtbase",
+      "features": ["widgets"]
+    }
+  ]
+}

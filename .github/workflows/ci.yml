@@ -61,7 +61,7 @@ jobs:
         shell: bash
         run: |
           windeployqt --release --no-translations --no-system-d3d-compiler \
-            --no-opengl-sw "build/Release/BinCalc.exe"
+            --no-opengl-sw --no-angle "build/Release/BinCalc.exe"
 
       - name: Upload runnable package
         uses: actions/upload-artifact@v4

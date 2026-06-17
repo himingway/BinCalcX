@@ -120,6 +120,7 @@ void CalculatorView::showEvent(QShowEvent *event)
 void CalculatorView::setHexText(const QString &text)     { hexDisplay_->setText(text); }
 void CalculatorView::setOctalText(const QString &text)   { octDisplay_->setText(text); }
 void CalculatorView::setDecimalText(const QString &text) { decimalDisplay_->setText(text); }
+void CalculatorView::setBinaryText(const QString &text) { binaryText_ = text; }
 void CalculatorView::setCharText(const QString &text)
 {
     charText_ = text;
@@ -167,21 +168,34 @@ void CalculatorView::setActiveBase(const QString &baseToken)
     accent_ = accentForBase(baseToken, dark_);
     applyTheme(dark_, accent_);          // re-cascade accent onto bits/field/ENTER/X
 
-    for (auto &kv : baseButtons_) {
-        kv.second->setChecked(kv.first == baseToken);
-        kv.second->style()->unpolish(kv.second);   // force :checked to re-resolve
-        kv.second->style()->polish(kv.second);
+    const int active = baseIndex(baseToken);
+    for (int i = 0; i < 4; ++i) {
+        if (!baseBtns_[i]) continue;
+        baseBtns_[i]->setChecked(i == active);
+        baseBtns_[i]->style()->unpolish(baseBtns_[i]);   // force :checked to re-resolve
+        baseBtns_[i]->style()->polish(baseBtns_[i]);
     }
-    for (auto &kv : baseFields_) {
-        kv.second->setObjectName(kv.first == baseToken ? "fieldActive" : "");
-        kv.second->style()->unpolish(kv.second);
-        kv.second->style()->polish(kv.second);
+    // HEX/OCT/DEC fields (index 3, 1, 2) — BIN has no field.
+    QLineEdit *fields[] = { nullptr, octDisplay_, decimalDisplay_, hexDisplay_ };
+    for (int i = 1; i < 4; ++i) {
+        if (!fields[i]) continue;
+        fields[i]->setObjectName(i == active ? "fieldActive" : "");
+        fields[i]->style()->unpolish(fields[i]);
+        fields[i]->style()->polish(fields[i]);
     }
     applyDigitEnables(baseToken);
 }
 
 void CalculatorView::refreshBits(quint64 value)
 {
+    // Early-out when neither the bit pattern nor the active width changed —
+    // avoids 64 unpolish+polish round-trips (stylesheet re-parses) on every
+    // displayChanged signal.
+    if (value == lastBitValue_ && activeWidth_ == lastBitWidth_)
+        return;
+    lastBitValue_ = value;
+    lastBitWidth_ = activeWidth_;
+
     for (int bit = 0; bit < 64; ++bit) {
         QPushButton *btn = bitButtons_[bit];
         const char *obj;
@@ -199,9 +213,13 @@ void CalculatorView::refreshBits(quint64 value)
 void CalculatorView::setActiveWidth(int width)
 {
     activeWidth_ = width;
+    lastBitWidth_ = -1;   // invalidate refreshBits cache — width changed
     // Sync segmented-control UI so the correct button appears checked.
-    for (auto &kv : widthButtons_)
-        kv.second->setChecked(kv.first == width);
+    const int active = (width == 8) ? 0 : (width == 16) ? 1 : (width == 32) ? 2 : 3;
+    for (int i = 0; i < 4; ++i) {
+        if (widthBtns_[i])
+            widthBtns_[i]->setChecked(i == active);
+    }
 }
 
 void CalculatorView::setTheme(bool dark)
@@ -305,10 +323,15 @@ void CalculatorView::keyPressEvent(QKeyEvent *event)
 void CalculatorView::copyActiveValue()
 {
     // Copy the active base's value, clean (no grouping separators) so it pastes
-    // straight into code. BIN has no text field, so fall back to decimal.
+    // straight into code. BIN has no text field — use the stored binary string.
     QString text;
-    const auto it = baseFields_.find(activeBase_);
-    text = (it != baseFields_.end()) ? it->second->text() : decimalDisplay_->text();
+    if (activeBase_ == "BIN") {
+        text = binaryText_;
+    } else {
+        QLineEdit *fields[] = { nullptr, octDisplay_, decimalDisplay_, hexDisplay_ };
+        QLineEdit *fld = fields[baseIndex(activeBase_)];
+        text = fld ? fld->text() : decimalDisplay_->text();
+    }
     text.remove(' ');
     QGuiApplication::clipboard()->setText(text);
     setStatusMessage(tr("Copied: %1").arg(text));
@@ -672,8 +695,6 @@ void CalculatorView::buildLayout()
     baseRows->addLayout(row2);
     root->addLayout(baseRows);
 
-    baseFields_ = { {"HEX", hexDisplay_}, {"OCT", octDisplay_}, {"DEC", decimalDisplay_} };
-
     // --- controls: keypad (4x4) + ops (5x4) side by side ---
     auto controlsHBox = new QHBoxLayout;
     controlsHBox->setSpacing(4);
@@ -742,7 +763,10 @@ QPushButton *CalculatorView::makeDigit(const QString &text)
     b->setFocusPolicy(Qt::NoFocus);
     QFont f = b->font(); f.setBold(true); f.setPointSize(10); b->setFont(f);
     connect(b, &QPushButton::clicked, this, [this, text]{ emit digitPressed(text); });
-    digitButtons_[text] = b;
+    // '0'–'9' → index 0–9,  'A'–'F' → index 10–15
+    const QChar c = text.at(0);
+    const int idx = (c >= 'A') ? (10 + c.unicode() - 'A') : (c.unicode() - '0');
+    digitBtns_[idx] = b;
     return b;
 }
 
@@ -777,7 +801,7 @@ QPushButton *CalculatorView::makeBaseButton(const QString &label, const QString 
     b->setFocusPolicy(Qt::NoFocus);
     QFont f = b->font(); f.setBold(true); f.setPointSize(8); b->setFont(f);
     connect(b, &QPushButton::clicked, this, [this, token]{ emit baseSelected(token); });
-    baseButtons_[token] = b;
+    baseBtns_[baseIndex(token)] = b;
     return b;
 }
 
@@ -803,22 +827,29 @@ QToolButton *CalculatorView::makeWidthButton(const QString &label, int width)
     b->setToolTip(tr("Bit width: %1").arg(width));
     connect(b, &QToolButton::clicked, this, [this, width]{ emit bitWidthRequested(width); });
     widthGroup_->addButton(b);
-    widthButtons_[width] = b;
+    // 8→0  16→1  32→2  64→3
+    const int idx = (width == 8) ? 0 : (width == 16) ? 1 : (width == 32) ? 2 : 3;
+    widthBtns_[idx] = b;
     return b;
+}
+
+int CalculatorView::baseIndex(const QString &token)
+{
+    // Matches CalculatorModel::Base enum: Binary=0 Octal=1 Decimal=2 Hexadecimal=3
+    if (token == "OCT") return 1;
+    if (token == "DEC") return 2;
+    if (token == "HEX") return 3;
+    Q_ASSERT(token == "BIN");
+    return 0;
 }
 
 void CalculatorView::applyDigitEnables(const QString &baseToken)
 {
-    const int baseRank = (baseToken == "HEX") ? 3 :
-                         (baseToken == "DEC") ? 2 :
-                         (baseToken == "OCT") ? 1 : 0;
-    for (auto &kv : digitButtons_) {
-        const QChar c = kv.first.at(0);
-        int digitRank;
-        if (c >= '0' && c <= '1') digitRank = 0;
-        else if (c >= '2' && c <= '7') digitRank = 1;
-        else if (c == '8' || c == '9') digitRank = 2;
-        else digitRank = 3;
-        kv.second->setEnabled(baseRank >= digitRank);
+    const int baseRank = baseIndex(baseToken);
+    // digitRank: 0–1 → rank 0,  2–7 → rank 1,  8–9 → rank 2,  A–F → rank 3
+    for (int i = 0; i < 16; ++i) {
+        if (!digitBtns_[i]) continue;
+        const int digitRank = (i <= 1) ? 0 : (i <= 7) ? 1 : (i <= 9) ? 2 : 3;
+        digitBtns_[i]->setEnabled(baseRank >= digitRank);
     }
 }

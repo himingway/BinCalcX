@@ -24,6 +24,12 @@ qt_add_executable(BinCalc WIN32
 target_include_directories(BinCalc PRIVATE src)
 target_link_libraries(BinCalc PRIVATE Qt6::Core Qt6::Widgets)
 
+# Size-optimise the binary (especially on Windows).
+if(MSVC)
+    target_compile_options(BinCalc PRIVATE /O1 /GL)          # optimise for size + link-time code gen
+    target_link_options(BinCalc PRIVATE /LTCG /OPT:REF /OPT:ICF)  # strip unreferenced, fold identical COMDATs
+endif()
+
 # Windows .exe icon (explorer / taskbar / start-menu). The .rc is generated from
 # assets/app.rc.in with an absolute .ico path so rc.exe resolves it from any
 # build directory. The runtime window icon (title bar / alt-tab) comes from the

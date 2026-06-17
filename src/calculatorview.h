@@ -5,7 +5,6 @@
 #include <QWidget>
 
 #include <array>
-#include <map>
 
 class QButtonGroup;
 class QCheckBox;
@@ -43,6 +42,7 @@ public:
     void setHexText(const QString &text);
     void setOctalText(const QString &text);
     void setDecimalText(const QString &text);
+    void setBinaryText(const QString &text);  // stored for clipboard (no field)
     void setCharText(const QString &text);
     void setStackValues(const std::array<QString, 4> &values);
     void setSignedMode(bool enabled);
@@ -89,11 +89,14 @@ private:
     QPushButton  *shiftRightBtn_    = nullptr;   // ▶  X >> 1
     QToolButton  *themeBtn_         = nullptr;
     QButtonGroup *widthGroup_       = nullptr;
-    std::map<int, QToolButton *> widthButtons_;
+    // Index: [0]=8  [1]=16  [2]=32  [3]=64
+    std::array<QToolButton *, 4>  widthBtns_{};
 
-    std::map<QString, QPushButton *> baseButtons_;
-    std::map<QString, QLineEdit *>   baseFields_;
-    std::map<QString, QPushButton *> digitButtons_;
+    // Index: Base enum (0=BIN  1=OCT  2=DEC  3=HEX)
+    std::array<QPushButton *, 4>  baseBtns_{};
+
+    // Index: digit value 0–15  (0–9, A–F)
+    std::array<QPushButton *, 16> digitBtns_{};
 
     std::array<QPushButton *, 64> bitButtons_{};
     QLabel *statusLabel_ = nullptr;
@@ -101,8 +104,11 @@ private:
     bool    dark_         = true;
     QString accent_;        // current base-dependent accent colour
     QString activeBase_ = QStringLiteral("DEC");   // for clipboard copy target
+    QString binaryText_;                       // binary string (no field, for clipboard)
     QString charText_;                          // plain 8-char CHR string (model)
     int     activeWidth_   = 64;
+    quint64 lastBitValue_  = ~quint64(0);   // cache for refreshBits early-out
+    int     lastBitWidth_  = -1;
     QTimer *statusTimer_ = nullptr;                 // auto-clears the status line
     bool    firstShow_    = true;                    // re-apply theme once realised
 
@@ -120,4 +126,5 @@ private:
     QPushButton *makeShiftButton(const QString &glyph, bool left);
     QToolButton *makeWidthButton(const QString &label, int width);
     void applyDigitEnables(const QString &baseToken);
+    static int baseIndex(const QString &token);  // "BIN"→0 "OCT"→1 "DEC"→2 "HEX"→3
 };

@@ -5,7 +5,7 @@ TARGET = BinCalc
 TEMPLATE = app
 
 # Cross-platform: no console window on Windows.
-win32: CONFIG += console embed_manifest_exe
+win32: CONFIG += embed_manifest_exe
 
 SOURCES += \
     src/main.cpp \

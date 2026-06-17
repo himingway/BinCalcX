@@ -45,6 +45,14 @@ jobs:
           # Set per-step, not workflow-level: runner.temp needs the `runner`
           # context, which GitHub only exposes inside steps.
           VCPKG_BINARY_SOURCES: "clear;files,${{ runner.temp }}/vcpkg-cache,readwrite"
+          # vcpkg normally writes buildtrees/downloads/packages into C:\vcpkg,
+          # but the runner's C: drive is small (~15 GB); building qtbase from
+          # source there fills it ("There is not enough space on the disk").
+          # Redirect the heavy dirs onto runner.temp, which sits on the large
+          # D: drive (~80 GB).
+          VCPKG_BUILDTREES_DIR: ${{ runner.temp }}/vcpkg-buildtrees
+          VCPKG_DOWNLOADS_DIR:  ${{ runner.temp }}/vcpkg-downloads
+          VCPKG_PACKAGES_DIR:   ${{ runner.temp }}/vcpkg-packages
         run: >
           cmake -S . -B build
           -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake

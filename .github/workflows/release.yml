@@ -17,11 +17,8 @@ env:
   # *tool* version can't change what Qt gets built — only the baseline can.
   VCPKG_ROOT: C:\vcpkg
   VCPKG_DEFAULT_TRIPLET: x64-windows-static
-  # File-backed binary cache, restored by the actions/cache step below. Replaces
-  # the "x-gha" source (which relied on undocumented ACTIONS_CACHE_URL /
-  # ACTIONS_RUNTIME_TOKEN internals that the new GHA cache backend may leave
-  # empty): compiled Qt binaries now persist across runs without those vars.
-  VCPKG_BINARY_SOURCES: "clear;files,${{ runner.temp }}/vcpkg-cache,readwrite"
+  # (The file-backed VCPKG_BINARY_SOURCES is set on the Configure step's env,
+  #  not here — the `runner` context isn't available at workflow-level env.)
 
 jobs:
   windows:
@@ -44,6 +41,10 @@ jobs:
       # configure. CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded (/MT) matches the
       # x64-windows-static triplet, so the app and Qt share the static CRT.
       - name: Configure (Release)
+        env:
+          # Set per-step, not workflow-level: runner.temp needs the `runner`
+          # context, which GitHub only exposes inside steps.
+          VCPKG_BINARY_SOURCES: "clear;files,${{ runner.temp }}/vcpkg-cache,readwrite"
         run: >
           cmake -S . -B build
           -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake

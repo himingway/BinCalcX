@@ -15,7 +15,11 @@ env:
   # Use the runner's preinstalled vcpkg: no git clone, no bootstrap step. Port
   # versions are pinned by vcpkg.json's builtin-baseline, so the floating vcpkg
   # *tool* version can't change what Qt gets built — only the baseline can.
-  VCPKG_ROOT: C:\vcpkg
+  # Cloned into the workspace (D: drive) by the "Get vcpkg" step below — NOT the
+  # preinstalled C:\vcpkg, because vcpkg writes its qtbase source build into
+  # <root>/buildtrees and the runner's C: drive is too small (~15 GB). There is
+  # no env var to relocate buildtrees, so the whole instance lives on D:.
+  VCPKG_ROOT: ${{ github.workspace }}/vcpkg
   VCPKG_DEFAULT_TRIPLET: x64-windows-static
   # (The file-backed VCPKG_BINARY_SOURCES is set on the Configure step's env,
   #  not here — the `runner` context isn't available at workflow-level env.)
@@ -40,19 +44,20 @@ jobs:
       # Manifest mode: vcpkg auto-installs qtbase (pinned by vcpkg.json) during
       # configure. CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded (/MT) matches the
       # x64-windows-static triplet, so the app and Qt share the static CRT.
+      # Clone vcpkg into the workspace (D:) at the same registry tag pinned by
+      # vcpkg.json's builtin-baseline, then bootstrap. Everything vcpkg writes
+      # during the Qt build (buildtrees, packages, downloads) lands here on D:,
+      # where there's ~80 GB free — not on the ~15 GB C: drive.
+      - name: Get vcpkg (pinned, on D:)
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch 2026.05.25 https://github.com/microsoft/vcpkg.git
+          .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+
       - name: Configure (Release)
         env:
-          # Set per-step, not workflow-level: runner.temp needs the `runner`
-          # context, which GitHub only exposes inside steps.
+          # runner.temp is only valid in step-level env, not workflow-level.
           VCPKG_BINARY_SOURCES: "clear;files,${{ runner.temp }}/vcpkg-cache,readwrite"
-          # vcpkg normally writes buildtrees/downloads/packages into C:\vcpkg,
-          # but the runner's C: drive is small (~15 GB); building qtbase from
-          # source there fills it ("There is not enough space on the disk").
-          # Redirect the heavy dirs onto runner.temp, which sits on the large
-          # D: drive (~80 GB).
-          VCPKG_BUILDTREES_DIR: ${{ runner.temp }}/vcpkg-buildtrees
-          VCPKG_DOWNLOADS_DIR:  ${{ runner.temp }}/vcpkg-downloads
-          VCPKG_PACKAGES_DIR:   ${{ runner.temp }}/vcpkg-packages
         run: >
           cmake -S . -B build
           -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake

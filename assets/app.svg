@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2A2A2E"/>
+      <stop offset="1" stop-color="#1B1B1E"/>
+    </linearGradient>
+  </defs>
+
+  <!-- App-tile background (VS Code-grade dark, rounded) -->
+  <rect x="32" y="32" width="960" height="960" rx="216" ry="216"
+        fill="url(#bg)" stroke="#3C3C3C" stroke-width="8"/>
+
+  <!-- 4x4 bit-grid: cells form an X (echoes BinCalcX) -->
+  <!-- lit = teal HEX accent #4EC9B0 ; off = #2D2D2D / border #3C3C3C -->
+  <g>
+    <!-- row 0 -->
+    <rect x="190" y="190" width="140" height="140" rx="26" fill="#4EC9B0"/>
+    <rect x="358" y="190" width="140" height="140" rx="26" fill="#2D2D2D" stroke="#3C3C3C" stroke-width="6"/>
+    <rect x="526" y="190" width="140" height="140" rx="26" fill="#2D2D2D" stroke="#3C3C3C" stroke-width="6"/>
+    <rect x="694" y="190" width="140" height="140" rx="26" fill="#4EC9B0"/>
+    <!-- row 1 -->
+    <rect x="190" y="358" width="140" height="140" rx="26" fill="#2D2D2D" stroke="#3C3C3C" stroke-width="6"/>
+    <rect x="358" y="358" width="140" height="140" rx="26" fill="#4EC9B0"/>
+    <rect x="526" y="358" width="140" height="140" rx="26" fill="#4EC9B0"/>
+    <rect x="694" y="358" width="140" height="140" rx="26" fill="#2D2D2D" stroke="#3C3C3C" stroke-width="6"/>
+    <!-- row 2 -->
+    <rect x="190" y="526" width="140" height="140" rx="26" fill="#2D2D2D" stroke="#3C3C3C" stroke-width="6"/>
+    <rect x="358" y="526" width="140" height="140" rx="26" fill="#4EC9B0"/>
+    <rect x="526" y="526" width="140" height="140" rx="26" fill="#4EC9B0"/>
+    <rect x="694" y="526" width="140" height="140" rx="26" fill="#2D2D2D" stroke="#3C3C3C" stroke-width="6"/>
+    <!-- row 3 -->
+    <rect x="190" y="694" width="140" height="140" rx="26" fill="#4EC9B0"/>
+    <rect x="358" y="694" width="140" height="140" rx="26" fill="#2D2D2D" stroke="#3C3C3C" stroke-width="6"/>
+    <rect x="526" y="694" width="140" height="140" rx="26" fill="#2D2D2D" stroke="#3C3C3C" stroke-width="6"/>
+    <rect x="694" y="694" width="140" height="140" rx="26" fill="#4EC9B0"/>
+  </g>
+</svg>

@@ -1,0 +1,4 @@
+// Windows application icon for BinCalcX (qmake path).
+// Reference is relative to the repository root, where `qmake6 bincalc.pro` runs
+// (in-tree build), so rc.exe finds assets/app.ico.
+IDI_ICON1 ICON DISCARDABLE "assets/app.ico"

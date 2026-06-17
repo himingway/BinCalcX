@@ -1,5 +1,7 @@
 #include <QApplication>
 #include <QFont>
+#include <QIcon>
+#include <QSize>
 #include <QStyleHints>
 
 #include "calculatorcontroller.h"
@@ -32,6 +34,15 @@ int main(int argc, char *argv[])
     monoFont.setStyleHint(QFont::Monospace);
     monoFont.setPointSize(9);
     app.setFont(monoFont);
+
+    // App icon — a multi-resolution bit-grid "X" (see assets/app.svg), embedded
+    // via assets/app.qrc. Set application-wide so the title bar, taskbar and
+    // alt-tab all carry it. On Windows the .exe icon (explorer / start menu) is
+    // baked in at build time via assets/app.rc; this is the runtime icon.
+    QIcon appIcon;
+    for (const int s : {16, 32, 48, 64, 128, 256})
+        appIcon.addFile(QStringLiteral(":/icons/app-%1.png").arg(s), QSize(s, s));
+    QApplication::setWindowIcon(appIcon);
 
     CalculatorModel model;
     CalculatorView view;

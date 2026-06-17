@@ -1,0 +1,4 @@
+// Windows application icon for BinCalcX.
+// Configured by CMake: @ICON_PATH@ becomes an absolute path so rc.exe resolves
+// it regardless of the build directory.
+IDI_ICON1 ICON DISCARDABLE "@ICON_PATH@"

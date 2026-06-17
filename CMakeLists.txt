@@ -18,10 +18,21 @@ qt_add_executable(BinCalc WIN32
     src/calculatormodel.cpp
     src/calculatorview.cpp
     src/calculatorcontroller.cpp
+    assets/app.qrc
 )
 
 target_include_directories(BinCalc PRIVATE src)
 target_link_libraries(BinCalc PRIVATE Qt6::Core Qt6::Widgets)
+
+# Windows .exe icon (explorer / taskbar / start-menu). The .rc is generated from
+# assets/app.rc.in with an absolute .ico path so rc.exe resolves it from any
+# build directory. The runtime window icon (title bar / alt-tab) comes from the
+# Qt resource set in main.cpp and works on every platform.
+if(WIN32)
+    set(ICON_PATH "${CMAKE_CURRENT_SOURCE_DIR}/assets/app.ico")
+    configure_file(assets/app.rc.in ${CMAKE_CURRENT_BINARY_DIR}/app.rc @ONLY)
+    target_sources(BinCalc PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/app.rc)
+endif()
 
 # A friendlier app id on macOS; harmless elsewhere.
 set_target_properties(BinCalc PROPERTIES

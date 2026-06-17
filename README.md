@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/app-256.png" width="128" alt="BinCalcX">
+</p>
+
 # BinCalcX — Programmer's Calculator
 
 [![CI](https://github.com/himingway/BinCalcX/actions/workflows/ci.yml/badge.svg)](https://github.com/himingway/BinCalcX/actions/workflows/ci.yml)

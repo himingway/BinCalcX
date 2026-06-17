@@ -37,7 +37,9 @@ public:
     QString octalString() const;
     QString decimalString() const;
     QString hexadecimalString() const;   // padded to width, grouped into words
-    QString charString() const;          // low byte as ASCII (· if not printable)
+    QString charString() const;          // 8-byte (full 64-bit) decode, MSB→LSB;
+                                         // '.' for NUL/non-printable so the field
+                                         // is always exactly 8 cells (no jitter)
 
     /// T, Z, Y, X formatted in decimal (mirrors the reference layout).
     std::array<QString, 4> stackStrings() const;
@@ -76,6 +78,13 @@ public slots:
     void applyBinaryOp(Op op);  // pops Y and X, pushes Y op X (masked)
     void applyNot();            // bitwise NOT of X (unary, masked)
     void toggleBit(int bit);    // flip a single bit of X (ignored if out of range)
+
+    /// In-place single-bit shifts on X (the ◀ ▶ buttons), distinct from the
+    /// SHL/SHR binary ops (which shift Y by the X amount). Left shifts truncate
+    /// to the active width; right shifts are logical when unsigned and
+    /// arithmetic (sign-extending) when signed, relative to the active width.
+    void shiftLeft();
+    void shiftRight();
 
 signals:
     void displayChanged();

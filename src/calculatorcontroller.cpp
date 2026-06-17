@@ -18,6 +18,7 @@ CalculatorController::CalculatorController(CalculatorModel &model,
     connect(&view_, &CalculatorView::signedModeChanged, this, &CalculatorController::onSignedMode);
     connect(&view_, &CalculatorView::bitToggled,        this, &CalculatorController::onBitToggled);
     connect(&view_, &CalculatorView::bitWidthRequested, this, &CalculatorController::onBitWidthRequested);
+    connect(&view_, &CalculatorView::shiftRequested,    this, &CalculatorController::onShift);
     connect(&view_, &CalculatorView::themeToggled,      this, &CalculatorController::onTheme);
     connect(&view_, &CalculatorView::stayOnTopToggled,  this, &CalculatorController::onStayOnTop);
     connect(&view_, &CalculatorView::pasteRequested,    this, &CalculatorController::onPaste);
@@ -86,6 +87,14 @@ void CalculatorController::onBitWidthChanged(int width)
     view_.setActiveWidth(width);     // grey out high cells >= width (no rebuild)
     refreshView();                   // refreshBits() applies the new width
     settings_->setValue("calc/bitWidth", width);
+}
+
+void CalculatorController::onShift(bool left)
+{
+    // In-place single-bit shift on X. displayChanged → refreshView redraws
+    // everything (bit-grid, HEX/DEC/OCT, stack, CHR) synchronously.
+    if (left) model_.shiftLeft();
+    else      model_.shiftRight();
 }
 
 void CalculatorController::onTheme(bool dark)

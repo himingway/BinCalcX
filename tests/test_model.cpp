@@ -174,6 +174,51 @@ int main()
       check(ok && g == 0xFF, "paste 0x1FF masked 8-bit -> FF", g, 0xFF); }
     check(!m.loadFromText("nope"), "paste invalid -> rejected", 0, 0);
 
+    // --- in-place ◀ ▶ single-bit shifts on X (distinct from SHL/SHR ops) ---
+    m.setBitWidth(64);
+    m.setBase(CalculatorModel::Base::Hexadecimal);
+    m.setSignedMode(false);
+
+    // left shift by 1: 0x1 -> 0x2
+    m.clearAll(); m.loadFromText("0x1");
+    m.shiftLeft();
+    check((long long)m.xRegister() == 2, "shiftLeft: 0x1 -> 0x2", (long long)m.xRegister(), 2);
+
+    // left shift truncates to the width: 0x80 (8-bit) -> 0x00
+    m.setBitWidth(8);
+    m.clearAll(); m.loadFromText("0x80");
+    m.shiftLeft();
+    check((long long)m.xRegister() == 0, "shiftLeft 8-bit: 0x80 -> 0x00", (long long)m.xRegister(), 0);
+
+    // right shift, unsigned (logical): 0x80 (8-bit) -> 0x40
+    m.clearAll(); m.loadFromText("0x80");
+    m.shiftRight();
+    check((long long)m.xRegister() == 0x40, "shiftRight logical 8-bit: 0x80 -> 0x40", (long long)m.xRegister(), 0x40);
+
+    // right shift, signed (arithmetic): 0x80 (8-bit, -128) -> 0xC0 (-64)
+    m.setSignedMode(true);
+    m.clearAll(); m.loadFromText("0x80");
+    m.shiftRight();
+    check((long long)m.xRegister() == 0xC0, "shiftRight arith 8-bit: 0x80 -> 0xC0", (long long)m.xRegister(), 0xC0);
+
+    // sign extension keeps -1: 0xFF (8-bit) -> 0xFF
+    m.clearAll(); m.loadFromText("0xFF");
+    m.shiftRight();
+    check((long long)m.xRegister() == 0xFF, "shiftRight arith 8-bit: 0xFF -> 0xFF", (long long)m.xRegister(), 0xFF);
+    m.setSignedMode(false);
+
+    // --- CHR: full 8-byte (64-bit) decode, MSB first, '.' placeholders ---
+    m.setBitWidth(64);
+    m.setBase(CalculatorModel::Base::Decimal);
+    { m.clearAll(); m.loadFromText("0x41");
+      check(m.charString().toStdString() == ".......A", "CHR: 0x41 -> .......A", 0, 0); }
+    { m.clearAll(); m.loadFromText("0x4445414442454546");
+      check(m.charString().toStdString() == "DEADBEEF", "CHR: 0x44..46 -> DEADBEEF", 0, 0); }
+    // narrow width: high bytes are masked to 0 -> placeholders
+    m.setBitWidth(8);
+    { m.clearAll(); m.loadFromText("0x41");
+      check(m.charString().toStdString() == ".......A", "CHR 8-bit: 0x41 -> .......A", 0, 0); }
+
     m.setBitWidth(64);   // tidy restore
 
     std::printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);

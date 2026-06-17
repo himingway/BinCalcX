@@ -79,10 +79,21 @@ QString CalculatorModel::hexadecimalString() const
 
 QString CalculatorModel::charString() const
 {
-    const unsigned char c = static_cast<unsigned char>(xRegister() & 0xFFu);
-    if (c >= 0x20 && c <= 0x7E)
-        return QChar(c);
-    return QString(QChar(0x00B7));   // middle dot for "no printable char"
+    // Full 64-bit (8-byte) decode, MSB byte first so it reads left-to-right.
+    // xRegister() is already masked to the active width, so the high bytes of a
+    // narrow value are 0 → '.', which keeps the field a constant 8 cells with no
+    // jitter as the value changes.
+    const quint64 x = xRegister();
+    QString out;
+    out.reserve(8);
+    for (int byteIndex = 7; byteIndex >= 0; --byteIndex) {
+        const unsigned char c = static_cast<unsigned char>((x >> (byteIndex * 8)) & 0xFFu);
+        if (c >= 0x20 && c <= 0x7E)
+            out += QChar(c);
+        else
+            out += QLatin1Char('.');   // NUL / non-printable → safe placeholder
+    }
+    return out;
 }
 
 std::array<QString, 4> CalculatorModel::stackStrings() const
@@ -335,6 +346,34 @@ void CalculatorModel::toggleBit(int bit)
         return;
     const quint64 mask = 1ULL << bit;
     stack_[0] = normalize(static_cast<qint64>(static_cast<quint64>(stack_[0]) ^ mask));
+    entering_ = false;
+    liftOnNext_ = false;
+    refresh();
+}
+
+void CalculatorModel::shiftLeft()
+{
+    // X = X << 1, then physically truncate the high bits past the active width
+    // (e.g. 0x80 << 1 in 8-bit becomes 0x00). Operates in place on X.
+    const quint64 x = xRegister();
+    stack_[0] = normalize(static_cast<qint64>((x << 1) & mask()));
+    entering_ = false;
+    liftOnNext_ = false;
+    refresh();
+}
+
+void CalculatorModel::shiftRight()
+{
+    // X = X >> 1. Logical (MSB → 0) when unsigned; arithmetic (sign-extended)
+    // when signed, so a negative value stays negative relative to the width.
+    const quint64 x = xRegister();
+    quint64 result = x >> 1;
+    if (signed_) {
+        const quint64 signBit = 1ULL << (bitWidth_ - 1);
+        if (x & signBit)
+            result |= signBit;   // re-assert the sign bit shifted out of the MSB
+    }
+    stack_[0] = normalize(static_cast<qint64>(result));
     entering_ = false;
     liftOnNext_ = false;
     refresh();

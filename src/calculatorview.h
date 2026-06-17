@@ -61,6 +61,7 @@ signals:
     void signedModeChanged(bool enabled);
     void bitToggled(int bit);
     void bitWidthRequested(int width);
+    void shiftRequested(bool left);   // ◀ (left=true) shifts X<<1, ▶ shifts X>>1
     void themeToggled(bool dark);
     void stayOnTopToggled(bool on);
     void pasteRequested(const QString &text);    // clipboard text → Model
@@ -78,12 +79,14 @@ private:
     QLineEdit *hexDisplay_     = nullptr;
     QLineEdit *octDisplay_     = nullptr;
     QLineEdit *decimalDisplay_ = nullptr;
-    QLineEdit *charDisplay_    = nullptr;
+    QLabel    *charDisplay_    = nullptr;   // rich text → dimmed '.' placeholders
     std::array<QLineEdit *, 4> stackDisplays_{};
 
     // controls
     QCheckBox    *signedCheckbox_   = nullptr;
     QCheckBox    *stayOnTopCheckbox_= nullptr;
+    QPushButton  *shiftLeftBtn_     = nullptr;   // ◀  X << 1
+    QPushButton  *shiftRightBtn_    = nullptr;   // ▶  X >> 1
     QToolButton  *themeBtn_         = nullptr;
     QButtonGroup *widthGroup_       = nullptr;
     std::map<int, QToolButton *> widthButtons_;
@@ -98,12 +101,14 @@ private:
     bool    dark_         = true;
     QString accent_;        // current base-dependent accent colour
     QString activeBase_ = QStringLiteral("DEC");   // for clipboard copy target
+    QString charText_;                          // plain 8-char CHR string (model)
     int     activeWidth_   = 64;
     QTimer *statusTimer_ = nullptr;                 // auto-clears the status line
     bool    firstShow_    = true;                    // re-apply theme once realised
 
     void buildLayout();
     void copyActiveValue();       // Ctrl+C → clipboard, current base
+    void renderCharDisplay();     // turn charText_ into dimmed-placeholder HTML
     void applyTheme(bool dark, const QString &accent);
     static QString accentForBase(const QString &baseToken, bool dark = true);
 
@@ -112,6 +117,7 @@ private:
     QPushButton *makeCommand(const QString &label, const QString &cmdToken,
                              const char *objectName = nullptr);
     QPushButton *makeBaseButton(const QString &label, const QString &token);
+    QPushButton *makeShiftButton(const QString &glyph, bool left);
     QToolButton *makeWidthButton(const QString &label, int width);
     void applyDigitEnables(const QString &baseToken);
 };

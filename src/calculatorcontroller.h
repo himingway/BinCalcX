@@ -32,6 +32,7 @@ private slots:
     void onBitToggled(int bit);
     void onBitWidthRequested(int width);
     void onBitWidthChanged(int width);
+    void onShift(bool left);
     void onTheme(bool dark);
     void onStayOnTop(bool on);
     void onPaste(const QString &text);

@@ -120,7 +120,29 @@ void CalculatorView::showEvent(QShowEvent *event)
 void CalculatorView::setHexText(const QString &text)     { hexDisplay_->setText(text); }
 void CalculatorView::setOctalText(const QString &text)   { octDisplay_->setText(text); }
 void CalculatorView::setDecimalText(const QString &text) { decimalDisplay_->setText(text); }
-void CalculatorView::setCharText(const QString &text)    { charDisplay_->setText(text); }
+void CalculatorView::setCharText(const QString &text)
+{
+    charText_ = text;
+    renderCharDisplay();
+}
+
+void CalculatorView::renderCharDisplay()
+{
+    // The CHR field is always exactly 8 monospace cells. Printable bytes keep the
+    // field's foreground colour; the '.' placeholders (NUL / non-printable bytes
+    // and high bytes past the active width) render dimmed so real bytes read
+    // clearly against the padding.
+    const QString dim = dark_ ? QStringLiteral("#5A5F6A") : QStringLiteral("#9AA3B0");
+    QString html;
+    html.reserve(charText_.size() * 28);
+    for (const QChar &ch : charText_) {
+        if (ch == QLatin1Char('.'))
+            html += QStringLiteral("<span style=\"color:%1;\">.</span>").arg(dim);
+        else
+            html += QString(ch).toHtmlEscaped();   // &, <, > are valid printable bytes
+    }
+    charDisplay_->setText(html);
+}
 
 void CalculatorView::setStackValues(const std::array<QString, 4> &values)
 {
@@ -318,6 +340,9 @@ void CalculatorView::applyTheme(bool dark, const QString &accent)
         "  padding: 2px 5px; font-family: %34;"
         "  selection-background-color: %33; }"
         "QLineEdit#fieldActive { background: %3; color: %4; border: 1px solid %33; }"
+        /* ── CHR display (label, rich text — looks like a field) ── */
+        "QLabel#chrDisplay { background: %3; color: %4; border: 1px solid %7; border-radius: 3px;"
+        "  padding: 2px 5px; font-family: %34; }"
         "QLineEdit#stackZT { background: %17; color: %18; border: 1px solid %7; border-radius: 3px;"
         "  padding: 2px 5px; font-family: %34; }"
         "QLineEdit#stackY { background: %17; color: %19; border: 1px solid %7; border-radius: 3px;"
@@ -341,6 +366,10 @@ void CalculatorView::applyTheme(bool dark, const QString &accent)
         /* ── Base selector buttons ── */
         "QPushButton#base { background: %5; color: %28; border: 1px solid %7; }"
         "QPushButton#base:checked { background: %33; color: %16; border: 1px solid %33; }"
+        /* ── ◀ ▶ in-place shift keys — flat, borderless; accent on hover ── */
+        "QPushButton#shiftBtn { background: transparent; border: none; color: %28; padding: 0; }"
+        "QPushButton#shiftBtn:hover { color: %33; }"
+        "QPushButton#shiftBtn:pressed { color: %33; }"
         /* ── Bit cells ── */
         "QPushButton#bitOffA { background: %21; border: 1px solid %23; border-radius: 2px; }"
         "QPushButton#bitOffB { background: %22; border: 1px solid %23; border-radius: 2px; }"
@@ -386,6 +415,10 @@ void CalculatorView::applyTheme(bool dark, const QString &accent)
     .arg(mono);                                                                                                  // 34
 
     setStyleSheet(css);
+
+    // Re-tint the CHR placeholder dots for the new theme (dots only — the
+    // printable bytes inherit the field foreground set above).
+    renderCharDisplay();
 }
 
 // ---------------------------------------------------------------------------
@@ -582,32 +615,59 @@ void CalculatorView::buildLayout()
     auto baseRows = new QVBoxLayout;
     baseRows->setSpacing(2);
 
+    // Shared row height for the input fields, the ◀ ▶ shift keys and the base
+    // selectors — so the shift keys sit pixel-aligned with the fields.
+    const int baseFieldH = fontMetrics().height() + 8;
+
     auto row1 = new QHBoxLayout;
     row1->setSpacing(4);
     row1->addWidget(makeBaseButton(tr("HEX"), "HEX"));
     hexDisplay_ = new QLineEdit(this); hexDisplay_->setReadOnly(true);
+    hexDisplay_->setFixedHeight(baseFieldH);
     row1->addWidget(hexDisplay_, 2);
     row1->addWidget(makeBaseButton(tr("OCT"), "OCT"));
     octDisplay_ = new QLineEdit(this); octDisplay_->setReadOnly(true);
+    octDisplay_->setFixedHeight(baseFieldH);
     row1->addWidget(octDisplay_, 2);
     baseRows->addLayout(row1);
 
+    //  [DEC] [DEC field] [✓ Signed] [◀] [▶] [CHR] [CHR field]
     auto row2 = new QHBoxLayout;
     row2->setSpacing(4);
     row2->addWidget(makeBaseButton(tr("DEC"), "DEC"));
     decimalDisplay_ = new QLineEdit(this); decimalDisplay_->setReadOnly(true);
-    row2->addWidget(decimalDisplay_, 3);
+    decimalDisplay_->setFixedHeight(baseFieldH);
+    row2->addWidget(decimalDisplay_, 2);   // narrower than before — frees width for CHR
     signedCheckbox_ = new QCheckBox(tr("Signed"), this);
     signedCheckbox_->setChecked(false);
     signedCheckbox_->setFocusPolicy(Qt::NoFocus);
     connect(signedCheckbox_, &QCheckBox::toggled, this, &CalculatorView::signedModeChanged);
     row2->addWidget(signedCheckbox_);
+
+    // ◀ ▶ — in-place single-bit shifts on X (distinct from the << >> binary ops,
+    // which shift Y by the X amount). Left = X<<1 (truncated), right = X>>1
+    // (logical, or arithmetic when Signed). Glyphs via code points (mirrors the
+    // existing QChar(0x00B7) usage) so the source stays pure-ASCII — MSVC-safe.
+    shiftLeftBtn_  = makeShiftButton(QString(QChar(0x25C0)), true);   // ◀
+    shiftRightBtn_ = makeShiftButton(QString(QChar(0x25B6)), false);  // ▶
+    shiftLeftBtn_->setFixedHeight(baseFieldH);
+    shiftRightBtn_->setFixedHeight(baseFieldH);
+    row2->addWidget(shiftLeftBtn_);
+    row2->addWidget(shiftRightBtn_);
+
     auto charLabel = new QLabel(tr("CHR"), this);
     charLabel->setMinimumWidth(28); charLabel->setAlignment(Qt::AlignCenter);
     QFont clf = charLabel->font(); clf.setBold(true); charLabel->setFont(clf);
     row2->addWidget(charLabel);
-    charDisplay_ = new QLineEdit(this); charDisplay_->setReadOnly(true);
-    charDisplay_->setMaximumWidth(64); charDisplay_->setAlignment(Qt::AlignCenter);
+    charDisplay_ = new QLabel(this);                       // rich text → dimmed dots
+    charDisplay_->setObjectName("chrDisplay");
+    charDisplay_->setTextFormat(Qt::RichText);
+    charDisplay_->setAlignment(Qt::AlignCenter);
+    charDisplay_->setTextInteractionFlags(Qt::NoTextInteraction);
+    charDisplay_->setFixedHeight(baseFieldH);
+    // Wide enough to seat 8 monospace glyphs comfortably (e.g. "DEADBEEF").
+    const int chrW = charDisplay_->fontMetrics().horizontalAdvance(QStringLiteral("DEADBEEF")) + 20;
+    charDisplay_->setFixedWidth(chrW);
     row2->addWidget(charDisplay_);
     baseRows->addLayout(row2);
     root->addLayout(baseRows);
@@ -713,10 +773,23 @@ QPushButton *CalculatorView::makeBaseButton(const QString &label, const QString 
     b->setObjectName("base");
     b->setCheckable(true);
     b->setFixedWidth(38);
+    b->setFixedHeight(fontMetrics().height() + 8);   // match the input-field row height
     b->setFocusPolicy(Qt::NoFocus);
     QFont f = b->font(); f.setBold(true); f.setPointSize(8); b->setFont(f);
     connect(b, &QPushButton::clicked, this, [this, token]{ emit baseSelected(token); });
     baseButtons_[token] = b;
+    return b;
+}
+
+QPushButton *CalculatorView::makeShiftButton(const QString &glyph, bool left)
+{
+    auto b = new QPushButton(glyph, this);
+    b->setObjectName("shiftBtn");
+    b->setFixedWidth(20);
+    b->setFocusPolicy(Qt::NoFocus);
+    b->setToolTip(left ? tr("Shift X left by 1   (X = X << 1)")
+                       : tr("Shift X right by 1   (X = X >> 1, sign-extends if Signed)"));
+    connect(b, &QPushButton::clicked, this, [this, left]{ emit shiftRequested(left); });
     return b;
 }
 

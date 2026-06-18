@@ -1,8 +1,8 @@
 name: Release
 
-# Publishes a GitHub Release with a single, self-contained Windows .exe whenever
-# a version tag (v*) is pushed. Built against a STATIC Qt (vcpkg manifest mode,
-# x64-windows-static triplet) so no DLLs ship — unzip and double-click.
+# Publishes a GitHub Release with a ready-to-run Windows build whenever a
+# version tag (v*) is pushed. End users get a zip: BinCalc.exe + Qt DLLs +
+# the platforms plugin — unzip and double-click, no install needed.
 
 on:
   push:
@@ -11,89 +11,37 @@ on:
 permissions:
   contents: write        # required to create the Release and upload assets
 
-env:
-  # Use the runner's preinstalled vcpkg: no git clone, no bootstrap step. Port
-  # versions are pinned by vcpkg.json's builtin-baseline, so the floating vcpkg
-  # *tool* version can't change what Qt gets built — only the baseline can.
-  # Cloned into the workspace (D: drive) by the "Get vcpkg" step below — NOT the
-  # preinstalled C:\vcpkg, because vcpkg writes its qtbase source build into
-  # <root>/buildtrees and the runner's C: drive is too small (~15 GB). There is
-  # no env var to relocate buildtrees, so the whole instance lives on D:.
-  VCPKG_ROOT: ${{ github.workspace }}/vcpkg
-  VCPKG_DEFAULT_TRIPLET: x64-windows-static
-  # (The file-backed VCPKG_BINARY_SOURCES is set on the Configure step's env,
-  #  not here — the `runner` context isn't available at workflow-level env.)
-
 jobs:
   windows:
-    name: Windows static build → Release
+    name: Windows build → Release
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Restore vcpkg binary cache
-        uses: actions/cache@v4
+      - name: Install Qt 6 (MSVC)
+        uses: jurplel/install-qt-action@v4
         with:
-          path: ${{ runner.temp }}/vcpkg-cache
-          # Bump the key only when the manifest (baseline / deps) changes; the
-          # restore-keys prefix still rescues a partial hit on a baseline bump.
-          key: vcpkg-qtbase-x64-windows-static-${{ hashFiles('vcpkg.json') }}
-          restore-keys: |
-            vcpkg-qtbase-x64-windows-static-
+          version: '6.8.*'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
+          cache: true
 
-      # Manifest mode: vcpkg auto-installs qtbase (pinned by vcpkg.json) during
-      # configure. CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded (/MT) matches the
-      # x64-windows-static triplet, so the app and Qt share the static CRT.
-      # Clone vcpkg into the workspace (D:) at the same registry tag pinned by
-      # vcpkg.json's builtin-baseline, then bootstrap. Everything vcpkg writes
-      # during the Qt build (buildtrees, packages, downloads) lands here on D:,
-      # where there's ~80 GB free — not on the ~15 GB C: drive.
-      - name: Get vcpkg (pinned, on D:)
-        shell: pwsh
+      - name: Configure & build (Release)
         run: |
-          git clone --depth 1 --branch 2026.05.25 https://github.com/microsoft/vcpkg.git
-          .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
-
-      - name: Configure (Release)
-        env:
-          # runner.temp is only valid in step-level env, not workflow-level.
-          VCPKG_BINARY_SOURCES: "clear;files,${{ runner.temp }}/vcpkg-cache,readwrite"
-        run: >
           cmake -S . -B build
-          -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake
-          -DVCPKG_TARGET_TRIPLET=x64-windows-static
-          -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          cmake --build build --config Release --parallel
 
-      - name: Build (Release)
-        run: cmake --build build --config Release --parallel
+      - name: Collect runtime deps (windeployqt)
+        shell: bash
+        run: |
+          windeployqt --release --no-translations --no-system-d3d-compiler \
+            --no-opengl-sw build/Release/BinCalc.exe
 
-      # No UPX: packing is the main trigger for antivirus false-positives, and
-      # the static exe is only ~1–2 MB larger unpacked — not worth the risk for
-      # a calculator. If size ever matters, prefer /O1+/LTCG tuning over packing.
-
-      # ── Optional: code-sign the .exe (currently off — no certificate) ──────────
-      # To enable later, add the secrets below and uncomment. Signing removes the
-      # "Unknown publisher" / SmartScreen warning. Alternatives: SignPath (free for
-      # OSS, via signpath/github-action-submit-signing-request) or a self-owned pfx
-      # via `signtool sign /tr <ts-server> /f cert.pfx /p $env:PFX_PASSWORD`.
-      #
-      # - name: Sign .exe (Azure Trusted Signing)
-      #   uses: azure/trusted-signing-action@v0
-      #   with:
-      #     azure-tenant-id:         ${{ secrets.AZURE_TENANT_ID }}
-      #     azure-client-id:         ${{ secrets.AZURE_CLIENT_ID }}
-      #     azure-client-secret:     ${{ secrets.AZURE_CLIENT_SECRET }}
-      #     endpoint:                ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
-      #     trusted-signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
-      #     certificate-profile-name:     ${{ secrets.TRUSTED_SIGNING_PROFILE }}
-      #     files: build/Release/BinCalc.exe
-      #     description: BinCalcX
-      #     descriptionUrl: https://github.com/badppg/bincalc
-
-      - name: Zip
+      - name: Zip the package
         shell: pwsh
         run: |
-          Compress-Archive -Path build/Release/BinCalc.exe `
+          Compress-Archive -Path build/Release/* `
             -DestinationPath "BinCalc-$env:GITHUB_REF_NAME-windows-x64.zip"
 
       - name: Publish GitHub Release

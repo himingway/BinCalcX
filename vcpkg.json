@@ -1,9 +1,0 @@
-{
-  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
-  "name": "bincalc",
-  "version-string": "1.0.0",
-  "description": "BinCalcX programmer's calculator",
-  "$comment": "Full default qtbase features. We tried default-features:false + a minimal feature set to shrink the build, but it broke rendering: dropping `png` killed the app icon (loaded from :/icons/app-*.png), and dropping the defaults also broke the Top/Signed checkboxes (native Windows widget style). Full defaults reproduce the dynamic-Qt CI/release builds exactly. Port versions are pinned by builtin-baseline (bump it to move Qt); only consumed when CMake runs with the vcpkg toolchain (Release workflow).",
-  "builtin-baseline": "d015e31e90838a4c9dfa3eed45979bc70d9357fc",
-  "dependencies": ["qtbase"]
-}

@@ -104,8 +104,8 @@ int main()
     m.inputDigit("2"); m.enter(); m.inputDigit("3");
     m.applyBinaryOp(CalculatorModel::Op::Add);
     auto ss = m.stackStrings();
-    check(ss[3].toLongLong() == 5, "stack row X shows 5", ss[3].toLongLong(), 5);
-    check(ss[0].toLongLong() == 0, "stack row T shows 0", ss[0].toLongLong(), 0);
+    check(ss[3].toStdString() == "64'h5", "stack row X verilog 64'h5", 0, 0);
+    check(ss[0].toStdString() == "64'h0", "stack row T verilog 64'h0", 0, 0);
 
 
     // unsigned display: set value 0xFFFFFFFFFFFFFFFF, signed => -1, unsigned => big
@@ -220,6 +220,71 @@ int main()
       check(m.charString().toStdString() == ".......A", "CHR 8-bit: 0x41 -> .......A", 0, 0); }
 
     m.setBitWidth(64);   // tidy restore
+
+    // --- decimal overflow: typing past the 64-bit max must NOT wrap to 0 ---
+    m.clearAll(); m.setBase(CalculatorModel::Base::Decimal);
+    for (int i = 0; i < 30; ++i) m.inputDigit("9");   // 20 nines would overflow
+    check((unsigned long long)m.xRegister() == 9999999999999999999ULL,
+          "20 nines -> 19 nines (no wrap to 0)", 0, 0);
+    // the exact max is still typable
+    m.clearAll();
+    for (char ch : {'1','8','4','4','6','7','4','4','0','7','3','7','0','9','5','5','1','6','1','5'})
+        m.inputDigit(QString(QChar(ch)));
+    check(((unsigned long long)m.xRegister()) == 0xFFFFFFFFFFFFFFFFull,
+          "64-bit max 18446744073709551615 typable", 0, 0);
+    // one more digit (max+1) is rejected
+    m.inputDigit("6");
+    check(((unsigned long long)m.xRegister()) == 0xFFFFFFFFFFFFFFFFull,
+          "max+1 rejected (stays at max)", 0, 0);
+    // octal overflow: the octal max is typable, one more digit rejected
+    m.clearAll(); m.setBase(CalculatorModel::Base::Octal);
+    m.inputDigit("1");
+    for (int i = 0; i < 21; ++i) m.inputDigit("7");   // 0o177...7 (22 digits) = max
+    check(((unsigned long long)m.xRegister()) == 0xFFFFFFFFFFFFFFFFull, "octal max typable", 0, 0);
+    m.inputDigit("7");   // 23 digits — overflow, rejected
+    check(((unsigned long long)m.xRegister()) == 0xFFFFFFFFFFFFFFFFull, "octal max+1 rejected", 0, 0);
+
+    // --- hardware-grade ops: reductions, concat, replicate, slice, Verilog ---
+    // (arbitrary widths come from applySlice — setBitWidth only does 8/16/32/64)
+
+    // concat {8'h0F, 4'h3} = 12'h0F3
+    m.clearAll(); m.setBitWidth(8); m.setBase(CalculatorModel::Base::Hexadecimal);
+    m.loadFromText("0x0F"); m.enter();                  // Y = 8'h0F
+    m.loadFromText("0x3"); m.applySlice(0, 3);          // X = 4'h3
+    m.concatenate();
+    check((long long)m.xRegister() == 0x0F3, "concat {0F,3} = 0F3", (long long)m.xRegister(), 0x0F3);
+    check(m.bitWidth() == 12, "concat width=12", m.bitWidth(), 12);
+
+    // replicate {3{4'b0011}} = 12'b001100110011 (0x333)
+    m.clearAll(); m.setBitWidth(64); m.setBase(CalculatorModel::Base::Decimal);
+    m.loadFromText("3"); m.enter();                     // Y = 3 (count)
+    m.loadFromText("0b0011"); m.applySlice(0, 3);       // X = 4'b0011
+    m.replicate();
+    check((long long)m.xRegister() == 0x333, "replicate {3{0011}} = 0x333", (long long)m.xRegister(), 0x333);
+    check(m.bitWidth() == 12, "replicate width=12", m.bitWidth(), 12);
+
+    // applySlice: bits [2..5] of 8'hFF -> 4'hF, width 4
+    m.clearAll(); m.setBitWidth(8);
+    m.loadFromText("0xFF");
+    m.applySlice(2, 5);   // (0xFF>>2) & mask(4) = 0x3F & 0xF = 0xF
+    check((long long)m.xRegister() == 0xF, "slice [2..5] of FF -> F", (long long)m.xRegister(), 0xF);
+    check(m.bitWidth() == 4, "slice width=4", m.bitWidth(), 4);
+
+    // per-register width survives ENTER (Y keeps X's width)
+    m.clearAll(); m.setBitWidth(8); m.setBase(CalculatorModel::Base::Hexadecimal);
+    m.loadFromText("0xFF"); m.enter();
+    { auto s = m.stackStrings(); check(s[2] == QStringLiteral("8'hFF"), "Y keeps width 8 after ENTER", 0, 0); }
+
+    // Verilog literals across bases (X = 8'hFF)
+    m.clearAll(); m.setBitWidth(8); m.loadFromText("0xFF");
+    m.setBase(CalculatorModel::Base::Hexadecimal);
+    { auto s = m.stackStrings(); check(s[3] == QStringLiteral("8'hFF"), "verilog 8'hFF", 0, 0); }
+    m.setBase(CalculatorModel::Base::Binary);
+    { auto s = m.stackStrings(); check(s[3] == QStringLiteral("8'b11111111"), "verilog 8'b11111111", 0, 0); }
+    m.setBase(CalculatorModel::Base::Decimal); m.setSignedMode(true);
+    { auto s = m.stackStrings(); check(s[3] == QStringLiteral("8'sd-1"), "verilog signed 8'sd-1", 0, 0); }
+    m.setSignedMode(false);
+    { auto s = m.stackStrings(); check(s[3] == QStringLiteral("8'd255"), "verilog unsigned 8'd255", 0, 0); }
 
     std::printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);
     return failures ? 1 : 0;

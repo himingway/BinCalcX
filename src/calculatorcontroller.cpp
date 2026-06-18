@@ -22,10 +22,25 @@ CalculatorController::CalculatorController(CalculatorModel &model,
     connect(&view_, &CalculatorView::themeToggled,      this, &CalculatorController::onTheme);
     connect(&view_, &CalculatorView::stayOnTopToggled,  this, &CalculatorController::onStayOnTop);
     connect(&view_, &CalculatorView::pasteRequested,    this, &CalculatorController::onPaste);
+    connect(&view_, &CalculatorView::sliceApplyRequested, this, [this](int lo, int hi){
+        model_.applySlice(lo, hi);   // "Set Width from slice" — extract [lo..hi] into X
+    });
+    connect(&view_, &CalculatorView::slicePushRequested, this, [this](int lo, int hi){
+        model_.pushSlice(lo, hi);    // ENTER on a slice — push it to Y, X unchanged
+    });
+    // Live slice preview on the X register: while a bit range is selected, X
+    // shows that slice as a Verilog literal (width + value); X itself is unchanged.
+    // The selection is cached so refreshView() can RE-assert the preview after any
+    // model refresh (base switch, signed toggle, bit toggle) that would otherwise
+    // overwrite the X field with the full-register literal.
+    connect(&view_, &CalculatorView::selectionChanged, this, [this](int lo, int hi){
+        selLo_ = lo; selHi_ = hi;
+        view_.setXField(lo >= 0 ? model_.sliceVerilogLiteral(lo, hi)
+                               : model_.xVerilogLiteral());
+    });
 
     // Model changes -> View refresh
     connect(&model_, &CalculatorModel::displayChanged,  this, &CalculatorController::refreshView);
-    connect(&model_, &CalculatorModel::modeChanged,     this, &CalculatorController::refreshView);
     connect(&model_, &CalculatorModel::bitWidthChanged, this, &CalculatorController::onBitWidthChanged);
 
     restorePreferences();
@@ -51,6 +66,9 @@ void CalculatorController::onCommand(const QString &command)
     else if (command == "ROLL")  model_.rollDown();
     else if (command == "SWAP")  model_.swapXY();
     else if (command == "BSP")   model_.backspace();
+    // hardware-grade ops
+    else if (command == "CONCAT") model_.concatenate();
+    else if (command == "REPL")   model_.replicate();
 }
 
 void CalculatorController::onBinaryOp(const QString &opToken)
@@ -127,6 +145,11 @@ void CalculatorController::refreshView()
     view_.setBinaryText(model_.binaryString());
     view_.setCharText(model_.charString());
     view_.setStackValues(model_.stackStrings());
+    // setStackValues just overwrote the X field with the full-register literal;
+    // if a bit-range selection is active, re-assert its slice preview (computed
+    // from the current model state, so it stays correct across base/value changes).
+    if (selLo_ >= 0)
+        view_.setXField(model_.sliceVerilogLiteral(selLo_, selHi_));
     view_.refreshBits(model_.xRegister());
     view_.setSignedMode(model_.signedMode());
 }

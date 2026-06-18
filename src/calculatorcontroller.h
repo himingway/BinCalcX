@@ -48,4 +48,5 @@ private:
     CalculatorModel &model_;
     CalculatorView  &view_;
     std::unique_ptr<QSettings> settings_;
+    int selLo_ = -1, selHi_ = -1;   // cached bit-range selection (to re-assert the X preview)
 };

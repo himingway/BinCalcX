@@ -46,6 +46,7 @@ public:
     void setBinaryText(const QString &text);  // stored for clipboard (no field)
     void setCharText(const QString &text);
     void setStackValues(const std::array<QString, 4> &values);
+    void setXField(const QString &text);          // override the X register (slice preview)
     void setSignedMode(bool enabled);
     void setActiveBase(const QString &baseToken);   // accent + keypad enables
     void refreshBits(quint64 value);                 // restyle the 64 cells
@@ -66,6 +67,9 @@ signals:
     void themeToggled(bool dark);
     void stayOnTopToggled(bool on);
     void pasteRequested(const QString &text);    // clipboard text → Model
+    void sliceApplyRequested(int lo, int hi);    // "Set Width from slice" → Model
+    void slicePushRequested(int lo, int hi);     // ENTER on a slice → push to Y, X unchanged
+    void selectionChanged(int lo, int hi);       // -1,-1 when cleared → live X preview
 
 protected:
     void keyPressEvent(QKeyEvent *event) override;
@@ -147,6 +151,7 @@ private:
     // marquee bit-range selection + keyboard-focus helpers
     void extendBitSelection(int curBit);   // grow selection to [anchor..cur]
     void clearBitSelection();              // drop selection + highlight
+    bool commitSelectionIfAny();           // push the previewed slice → Y (X unchanged); false if none
     void repaintBitCells();                // apply [bitsel] (selection) + [kfocus] (ring)
     void moveBitFocus(int delta);          // ±1 (←/→) or ±16 (↑/↓), wrapped mod 64
     void showSelectionStatus();            // status line: "Bits hi..lo = …"

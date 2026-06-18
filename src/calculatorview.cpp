@@ -153,6 +153,11 @@ void CalculatorView::setStackValues(const std::array<QString, 4> &values)
         stackDisplays_[i]->setText(values[i]);
 }
 
+void CalculatorView::setXField(const QString &text)
+{
+    stackDisplays_[3]->setText(text);   // X = bottom register
+}
+
 void CalculatorView::setSignedMode(bool enabled)
 {
     QSignalBlocker b(signedCheckbox_);
@@ -220,11 +225,13 @@ void CalculatorView::setActiveWidth(int width)
 {
     activeWidth_ = width;
     lastBitWidth_ = -1;   // invalidate refreshBits cache — width changed
-    // Sync segmented-control UI so the correct button appears checked.
-    const int active = (width == 8) ? 0 : (width == 16) ? 1 : (width == 32) ? 2 : 3;
+    // Sync segmented-control UI. Per-register widths can be arbitrary (slice /
+    // concat / replicate) — for a non-standard width, no segment is checked.
+    const int active = (width == 8) ? 0 : (width == 16) ? 1
+                      : (width == 32) ? 2 : (width == 64) ? 3 : -1;
     for (int i = 0; i < 4; ++i) {
         if (widthBtns_[i])
-            widthBtns_[i]->setChecked(i == active);
+            widthBtns_[i]->setChecked(i == active);   // active == -1 → none checked
     }
 }
 
@@ -315,8 +322,10 @@ bool CalculatorView::eventFilter(QObject *watched, QEvent *event)
             auto *me = static_cast<QMouseEvent *>(event);
             if (me->button() == Qt::LeftButton) {
                 if (bitSelecting_) {
-                    // Let the release through so Qt clears its grab + pressed
-                    // state normally; flag the resulting clicked() to be ignored.
+                    // Selection is non-destructive: it inspects/copies and feeds
+                    // {,}/{N} as an operand slice, but does NOT change X's width.
+                    // Let the release through so Qt clears its grab; flag the
+                    // resulting clicked() to be ignored (no toggle).
                     suppressClick_ = true;
                     showSelectionStatus();
                     selAnchorBtn_ = nullptr;
@@ -394,7 +403,11 @@ void CalculatorView::keyPressEvent(QKeyEvent *event)
     case Qt::Key_Slash:     emit binaryOpPressed("DIV"); return;
     case Qt::Key_Percent:   emit binaryOpPressed("MOD"); return;
     case Qt::Key_Return:
-    case Qt::Key_Enter:     emit commandPressed("ENTER"); return;
+    case Qt::Key_Enter:
+        // A selected slice is pushed to Y (X keeps its width); else normal lift.
+        if (!commitSelectionIfAny())
+            emit commandPressed("ENTER");
+        return;
     case Qt::Key_Backspace: emit commandPressed("BSP"); return;
     case Qt::Key_Escape:
         // First Esc cancels an active bit-range selection; only with no
@@ -458,6 +471,7 @@ void CalculatorView::extendBitSelection(int curBit)
     selHi_ = qMax(selAnchorBit_, curBit);
     repaintBitCells();
     showSelectionStatus();
+    emit selectionChanged(selLo_, selHi_);   // live-preview the slice on the X register
 }
 
 void CalculatorView::clearBitSelection()
@@ -467,6 +481,19 @@ void CalculatorView::clearBitSelection()
     selCurBit_ = selAnchorBit_ = -1;
     repaintBitCells();   // always repaint — keeps the focus ring current too
     if (had && !statusTimer_->isActive()) statusLabel_->clear();
+    if (had) emit selectionChanged(-1, -1);   // restore the real X register display
+}
+
+bool CalculatorView::commitSelectionIfAny()
+{
+    // Push the previewed slice to Y (its own width), leaving X unchanged so X
+    // keeps its W-selected width. Returns false when nothing is selected, so
+    // the caller (Enter) can do the normal RPN lift instead.
+    if (selLo_ < 0)
+        return false;
+    emit slicePushRequested(selLo_, selHi_);
+    clearBitSelection();
+    return true;
 }
 
 void CalculatorView::repaintBitCells()
@@ -955,12 +982,42 @@ void CalculatorView::buildLayout()
             b = makeCommand(d.label, d.token, d.danger ? "danger" : nullptr);
         opGrid->addWidget(b, d.r, d.c);
     }
+    // {,} concat and {N} replicate sit in row 3 (CLx CLR {,} {N}), keeping the
+    // op grid at 4 rows so it matches the 4-row digit keypad height. A marquee
+    // selection, if active, becomes X's slice for the op (extracted, width =
+    // span) — without changing X while merely inspecting/copying.
+    auto sliceOpBtn = [this](const QString &label, const QString &token, const QString &tip) {
+        auto b = new QPushButton(label, this);
+        b->setMinimumHeight(30); b->setMinimumWidth(34);
+        b->setFocusPolicy(Qt::NoFocus);
+        b->setToolTip(tip);
+        connect(b, &QPushButton::clicked, this, [this, token]{
+            if (selLo_ >= 0) {
+                emit sliceApplyRequested(selLo_, selHi_);   // X ← selected slice
+                clearBitSelection();
+            }
+            emit commandPressed(token);
+        });
+        return b;
+    };
+    opGrid->addWidget(sliceOpBtn(tr("{,}"), QStringLiteral("CONCAT"),
+                                 tr("Concatenate {Y,X} — a selected slice becomes X")), 3, 2);
+    opGrid->addWidget(sliceOpBtn(tr("{N}"), QStringLiteral("REPL"),
+                                 tr("Replicate {N{X}} — a selected slice becomes X")), 3, 3);
     controlsHBox->addLayout(opGrid, 1);
     root->addLayout(controlsHBox);
 
     // --- full-width ENTER ---
-    auto enterBtn = makeCommand(tr("ENTER"), "ENTER", "enter");
+    // A selected slice is pushed to Y (X keeps its width); else normal lift.
+    auto enterBtn = new QPushButton(tr("ENTER"), this);
+    enterBtn->setObjectName("enter");
     enterBtn->setMinimumHeight(34);
+    enterBtn->setMinimumWidth(34);
+    enterBtn->setFocusPolicy(Qt::NoFocus);
+    connect(enterBtn, &QPushButton::clicked, this, [this]{
+        if (!commitSelectionIfAny())
+            emit commandPressed("ENTER");
+    });
     root->addWidget(enterBtn);
 
     // --- status line (hover readout) ---
@@ -1001,7 +1058,7 @@ QPushButton *CalculatorView::makeDigit(const QString &text)
 QPushButton *CalculatorView::makeOp(const QString &label, const QString &opToken)
 {
     auto b = new QPushButton(label, this);
-    b->setMinimumHeight(28); b->setMinimumWidth(34);
+    b->setMinimumHeight(30); b->setMinimumWidth(34);
     b->setFocusPolicy(Qt::NoFocus);
     b->setObjectName("op");
     connect(b, &QPushButton::clicked, this, [this, opToken]{ emit binaryOpPressed(opToken); });
@@ -1012,7 +1069,7 @@ QPushButton *CalculatorView::makeCommand(const QString &label, const QString &cm
                                          const char *objectName)
 {
     auto b = new QPushButton(label, this);
-    b->setMinimumHeight(28); b->setMinimumWidth(34);
+    b->setMinimumHeight(30); b->setMinimumWidth(34);
     b->setFocusPolicy(Qt::NoFocus);
     if (objectName) b->setObjectName(QString::fromLatin1(objectName));
     connect(b, &QPushButton::clicked, this, [this, cmdToken]{ emit commandPressed(cmdToken); });

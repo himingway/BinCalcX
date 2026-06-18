@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QLineEdit>
+#include <QPoint>
 #include <QPushButton>
 #include <QWidget>
 
@@ -31,7 +32,7 @@ class QToolButton;
  *     onto lit bits, the active field, ENTER and the X register.
  *   - A fixed 4x16 = 64 textless bit grid. Cells past the active width are
  *     greyed out (hardware-truncation feedback) instead of removed. Hovering a
- *     cell reports its bit/mask in a quiet status line.
+ *     cell reports its bit and decimal/hex place value in a quiet status line.
  */
 class CalculatorView : public QWidget
 {
@@ -99,6 +100,7 @@ private:
     std::array<QPushButton *, 16> digitBtns_{};
 
     std::array<QPushButton *, 64> bitButtons_{};
+    QWidget *gridPanel_ = nullptr;   // bit-cell container; hit-tested for marquee select
     QLabel *statusLabel_ = nullptr;
 
     bool    dark_         = true;
@@ -109,6 +111,15 @@ private:
     int     activeWidth_   = 64;
     quint64 lastBitValue_  = ~quint64(0);   // cache for refreshBits early-out
     int     lastBitWidth_  = -1;
+    // marquee bit-range selection (press → drag → release on the bit grid)
+    bool         bitSelecting_ = false;
+    bool         suppressClick_ = false;   // drag-select release → swallow its clicked()
+    QPushButton *selAnchorBtn_ = nullptr;   // the pressed cell (implicit mouse grabber)
+    int          selAnchorBit_ = -1;
+    int          selCurBit_    = -1;
+    int          selLo_        = -1;        // current selection [selLo_..selHi_]; -1 = none
+    int          selHi_        = -1;
+    int          focusBit_     = 0;         // keyboard-focus cell (Focus Ring); Bit 0 by default
     QTimer *statusTimer_ = nullptr;                 // auto-clears the status line
     bool    firstShow_    = true;                    // re-apply theme once realised
 
@@ -127,4 +138,19 @@ private:
     QToolButton *makeWidthButton(const QString &label, int width);
     void applyDigitEnables(const QString &baseToken);
     static int baseIndex(const QString &token);  // "BIN"→0 "OCT"→1 "DEC"→2 "HEX"→3
+    // Is this hex digit char a legal digit for the given base? Mirrors
+    // CalculatorModel::isValidDigit so the keyboard layer can intercept an
+    // out-of-base key (e.g. '2'…'9', 'A'…'F' while BIN is active) before it
+    // ever reaches the Model — matching the on-screen keypad, which disables
+    // those same buttons via applyDigitEnables().
+    static bool isDigitValidForBase(QChar c, const QString &baseToken);
+    // marquee bit-range selection + keyboard-focus helpers
+    void extendBitSelection(int curBit);   // grow selection to [anchor..cur]
+    void clearBitSelection();              // drop selection + highlight
+    void repaintBitCells();                // apply [bitsel] (selection) + [kfocus] (ring)
+    void moveBitFocus(int delta);          // ±1 (←/→) or ±16 (↑/↓), wrapped mod 64
+    void showSelectionStatus();            // status line: "Bits hi..lo = …"
+    quint64 segmentValue() const;          // raw value of [selLo_..selHi_]; 0 if none
+    QString segmentValueText() const;      // segmentValue() formatted for the active base
+    QPushButton *bitButtonAt(const QPoint &globalPos) const;   // cell under cursor
 };

@@ -13,9 +13,11 @@
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QShortcut>
 #include <QShowEvent>
 #include <QSignalBlocker>
+#include <QSpacerItem>
 #include <QStyle>
 #include <QTimer>
 #include <QToolButton>
@@ -184,6 +186,10 @@ void CalculatorView::setActiveBase(const QString &baseToken)
         fields[i]->style()->polish(fields[i]);
     }
     applyDigitEnables(baseToken);
+    // A bit-range selection survives a base switch (it's a range of bits, not a
+    // value; the number itself is unchanged). Re-apply the [bitsel]/[kfocus]
+    // styling so the highlight and focus ring render against the new accent sheet.
+    repaintBitCells();
 }
 
 void CalculatorView::refreshBits(quint64 value)
@@ -257,16 +263,78 @@ void CalculatorView::onThemeButton(bool checked)
 bool CalculatorView::eventFilter(QObject *watched, QEvent *event)
 {
     auto *btn = qobject_cast<QPushButton *>(watched);
-    if (btn) {
-        const QVariant v = btn->property("bit");
-        if (v.isValid()) {
-            const int bit = v.toInt();
-            if (event->type() == QEvent::Enter)
-                statusLabel_->setText(tr("Bit: %1  |  Mask: 0x%2")
+    if (btn && btn->property("bit").isValid()) {
+        const int bit = btn->property("bit").toInt();
+        const QEvent::Type t = event->type();
+
+        // Hover readout. Suppressed while a range selection is active so its
+        // value stays visible; restored (or cleared) on leave.
+        if (t == QEvent::Enter) {
+            if (selLo_ < 0) {
+                const quint64 place = 1ULL << bit;   // this bit's place value
+                statusLabel_->setText(tr("Bit %1 | Dec: %2 | Hex: 0x%3")
                                       .arg(bit)
-                                      .arg(QString::number(1ULL << bit, 16).toUpper()));
-            else if (event->type() == QEvent::Leave)
-                statusLabel_->clear();
+                                      .arg(QString::number(place))
+                                      .arg(QString::number(place, 16).toUpper()));
+            }
+        } else if (t == QEvent::Leave) {
+            if (selLo_ >= 0) showSelectionStatus();
+            else if (!statusTimer_->isActive()) statusLabel_->clear();
+        }
+        // Marquee range selection on the bit grid: press anchors a cell, a drag
+        // that crosses into another cell extends the selection, release keeps it.
+        // The press is left unconsumed so a plain click still toggles the bit;
+        // only a genuine drag (cursor reaches a different cell) takes over.
+        else if (t == QEvent::MouseButtonPress) {
+            auto *me = static_cast<QMouseEvent *>(event);
+            if (me->button() == Qt::LeftButton) {
+                suppressClick_ = false;   // fresh press → re-arm normal toggling
+                focusBit_ = bit;          // a mouse click also moves the keyboard focus here
+                clearBitSelection();
+                selAnchorBtn_ = btn;
+                selAnchorBit_ = bit;
+                selCurBit_    = bit;
+                bitSelecting_ = false;
+            }
+            // Not consumed: the button becomes the implicit mouse grabber, so
+            // every move/release this press delivers routes back to it.
+        } else if (t == QEvent::MouseMove && watched == selAnchorBtn_) {
+            auto *me = static_cast<QMouseEvent *>(event);
+            QPushButton *cur = bitButtonAt(me->globalPosition().toPoint());
+            const int curBit = cur ? cur->property("bit").toInt() : -1;
+            if (!bitSelecting_) {
+                if (cur && curBit != selAnchorBit_) {
+                    bitSelecting_ = true;   // crossed into another cell → it's a drag
+                    extendBitSelection(curBit);
+                }
+                return false;             // still a potential click → let it through
+            }
+            extendBitSelection(curBit);
+            return true;                  // consume moves so the anchor button stays put
+        } else if (t == QEvent::MouseButtonRelease && watched == selAnchorBtn_) {
+            auto *me = static_cast<QMouseEvent *>(event);
+            if (me->button() == Qt::LeftButton) {
+                if (bitSelecting_) {
+                    // Let the release through so Qt clears its grab + pressed
+                    // state normally; flag the resulting clicked() to be ignored.
+                    suppressClick_ = true;
+                    showSelectionStatus();
+                    selAnchorBtn_ = nullptr;
+                    bitSelecting_ = false;
+                } else {
+                    selAnchorBtn_ = nullptr;   // plain click → toggles normally
+                }
+            }
+            // Not consumed
+        }
+    }
+    // A left-click on the grid's empty area (margins, nibble gaps, inter-row
+    // space — anywhere no bit cell sits) drops the current bit selection.
+    if (watched == gridPanel_ && event->type() == QEvent::MouseButtonPress) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (me->button() == Qt::LeftButton) {
+            clearBitSelection();
+            return true;
         }
     }
     return QWidget::eventFilter(watched, event);
@@ -292,7 +360,15 @@ void CalculatorView::keyPressEvent(QKeyEvent *event)
     if (!text.isEmpty()) {
         const QChar c = text.at(0).toUpper();
         const QString s(c);
-        if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F')) { emit digitPressed(s); return; }
+        if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F')) {
+            // Forward only digits legal for the active base and *consume* the
+            // rest (return, not fall through) so an out-of-base key — e.g. BIN
+            // rejecting 2–9 / A–F — is intercepted at the keyboard layer and
+            // never echoed. Operators/commands below stay live in every base.
+            if (isDigitValidForBase(c, activeBase_))
+                emit digitPressed(s);
+            return;
+        }
         if (c == '&') { emit binaryOpPressed("AND"); return; }
         if (c == '|') { emit binaryOpPressed("OR");  return; }
         if (c == '^') { emit binaryOpPressed("XOR"); return; }
@@ -305,6 +381,13 @@ void CalculatorView::keyPressEvent(QKeyEvent *event)
     }
 
     switch (key) {
+    // ── Bit-grid keyboard focus navigation (active while this view holds focus;
+    //    a HEX/DEC/OCT field keeps focus and handles its own keys, never here) ──
+    case Qt::Key_Left:  moveBitFocus(+1);  return;   // one bit toward MSB
+    case Qt::Key_Right: moveBitFocus(-1);  return;   // one bit toward LSB
+    case Qt::Key_Up:    moveBitFocus(+16); return;   // up one row
+    case Qt::Key_Down:  moveBitFocus(-16); return;   // down one row
+    case Qt::Key_Space: emit bitToggled(focusBit_); return;   // toggle the focused bit
     case Qt::Key_Plus:      emit binaryOpPressed("ADD"); return;
     case Qt::Key_Minus:     emit binaryOpPressed("SUB"); return;
     case Qt::Key_Asterisk:  emit binaryOpPressed("MUL"); return;
@@ -313,7 +396,11 @@ void CalculatorView::keyPressEvent(QKeyEvent *event)
     case Qt::Key_Return:
     case Qt::Key_Enter:     emit commandPressed("ENTER"); return;
     case Qt::Key_Backspace: emit commandPressed("BSP"); return;
-    case Qt::Key_Escape:    emit commandPressed("CLR"); return;
+    case Qt::Key_Escape:
+        // First Esc cancels an active bit-range selection; only with no
+        // selection does Esc fall through to CLR (clear all).
+        if (selLo_ >= 0) { clearBitSelection(); return; }
+        emit commandPressed("CLR"); return;
     case Qt::Key_Delete:    emit commandPressed("CLX"); return;
     default: break;
     }
@@ -322,9 +409,17 @@ void CalculatorView::keyPressEvent(QKeyEvent *event)
 
 void CalculatorView::copyActiveValue()
 {
-    // Copy the active base's value, clean (no grouping separators) so it pastes
-    // straight into code. BIN has no text field — use the stored binary string.
+    // If a bit range is selected, copy just that segment's value (in the active
+    // base). Otherwise copy the whole active-base value. Either way the text is
+    // clean (no grouping separators) so it pastes straight into code; BIN has no
+    // text field, so the full value comes from the stored binary string.
     QString text;
+    if (selLo_ >= 0) {
+        text = segmentValueText();
+        QGuiApplication::clipboard()->setText(text);
+        setStatusMessage(tr("Copied bits %1..%2 = %3").arg(selHi_).arg(selLo_).arg(text));
+        return;
+    }
     if (activeBase_ == "BIN") {
         text = binaryText_;
     } else {
@@ -344,6 +439,97 @@ void CalculatorView::setStatusMessage(const QString &msg)
 }
 
 // ---------------------------------------------------------------------------
+// marquee bit-range selection
+// ---------------------------------------------------------------------------
+QPushButton *CalculatorView::bitButtonAt(const QPoint &globalPos) const
+{
+    if (!gridPanel_) return nullptr;
+    QWidget *child = gridPanel_->childAt(gridPanel_->mapFromGlobal(globalPos));
+    auto *btn = qobject_cast<QPushButton *>(child);
+    // Skip disabled cells (past the active width) — they can't hold a value.
+    return (btn && btn->isEnabled() && btn->property("bit").isValid()) ? btn : nullptr;
+}
+
+void CalculatorView::extendBitSelection(int curBit)
+{
+    if (curBit < 0) return;   // cursor left the grid / hit a label → hold the range
+    selCurBit_ = curBit;
+    selLo_ = qMin(selAnchorBit_, curBit);
+    selHi_ = qMax(selAnchorBit_, curBit);
+    repaintBitCells();
+    showSelectionStatus();
+}
+
+void CalculatorView::clearBitSelection()
+{
+    const bool had = (selLo_ >= 0);
+    selLo_ = selHi_ = -1;
+    selCurBit_ = selAnchorBit_ = -1;
+    repaintBitCells();   // always repaint — keeps the focus ring current too
+    if (had && !statusTimer_->isActive()) statusLabel_->clear();
+}
+
+void CalculatorView::repaintBitCells()
+{
+    // Apply the two dynamic cell properties — [bitsel] (marquee selection) and
+    // [kfocus] (keyboard Focus Ring) — then force a re-style. Each layers a
+    // border over the cell's value-based background, so on/off stays legible;
+    // the [kfocus] rule is declared last, so a cell that is both selected and
+    // focused shows the focus ring.
+    for (int bit = 0; bit < 64; ++bit) {
+        QPushButton *btn = bitButtons_[bit];
+        if (!btn) continue;
+        const bool sel = (selLo_ >= 0 && bit >= selLo_ && bit <= selHi_);
+        btn->setProperty("bitsel", sel ? "1" : "0");
+        btn->setProperty("kfocus", bit == focusBit_ ? "1" : "0");
+        btn->style()->unpolish(btn);
+        btn->style()->polish(btn);
+    }
+}
+
+void CalculatorView::moveBitFocus(int delta)
+{
+    // Pure modular index arithmetic on the bit index — matches the spec's wrap
+    // rules exactly (Left +1, Right -1, Up +16, Down -16; 63↔0, row edges wrap).
+    focusBit_ = ((focusBit_ + delta) % 64 + 64) % 64;
+    repaintBitCells();
+}
+
+void CalculatorView::showSelectionStatus()
+{
+    if (selLo_ < 0) return;
+    const int n = selHi_ - selLo_ + 1;
+    const quint64 seg = segmentValue();
+    const QString bin = QString::number(seg, 2).rightJustified(n, '0');
+    statusLabel_->setText(tr("Bits %1..%2  =  %3   0x%4   0b%5")
+                          .arg(selHi_).arg(selLo_)
+                          .arg(QString::number(seg))
+                          .arg(QString::number(seg, 16).toUpper())
+                          .arg(bin));
+}
+
+quint64 CalculatorView::segmentValue() const
+{
+    // The integer formed by the selected bits, shifted down to bit 0.
+    if (selLo_ < 0) return 0;
+    const int n = selHi_ - selLo_ + 1;
+    const quint64 mask = (n >= 64) ? ~quint64(0) : ((1ULL << n) - 1);
+    return (lastBitValue_ >> selLo_) & mask;
+}
+
+QString CalculatorView::segmentValueText() const
+{
+    // The segment's value rendered in the active base — clean (no separators),
+    // and for BIN padded to the selected width so every selected bit shows.
+    const quint64 seg = segmentValue();
+    if (selLo_ < 0) return QString();
+    if (activeBase_ == "HEX") return QString::number(seg, 16).toUpper();
+    if (activeBase_ == "OCT") return QString::number(seg, 8);
+    if (activeBase_ == "BIN") return QString::number(seg, 2).rightJustified(selHi_ - selLo_ + 1, '0');
+    return QString::number(seg);   // DEC
+}
+
+// ---------------------------------------------------------------------------
 // theme application
 // ---------------------------------------------------------------------------
 void CalculatorView::applyTheme(bool dark, const QString &accent)
@@ -351,10 +537,21 @@ void CalculatorView::applyTheme(bool dark, const QString &accent)
     const Palette &p = dark ? kDark : kLight;
     const QString &A = accent;
 
+    // BIN has no text field to light up (HEX/OCT/DEC each get #fieldActive),
+    // so the bit-grid frame is its only base indicator — tint its border with
+    // the accent there. Other bases keep the neutral keyBorder so the grid
+    // doesn't compete with their lit field.
+    const QString gridBorder = (activeBase_ == QLatin1String("BIN")) ? A : p.keyBorder;
+
+    // Keyboard-focus ring on the bit grid — a fixed bright green that reads in
+    // both themes and stays distinct from the base accent (lit bits) and the
+    // selection border (keyFg).
+    const QString focusRing = dark ? QStringLiteral("#22C55E") : QStringLiteral("#16A34A");
+
     // Monospace font stack — used by every input field.
     const char *mono = "'JetBrains Mono','Cascadia Code','Fira Code','Consolas','Courier New',monospace";
 
-    // %1..%28 = palette, %29..%32 = toolbar*, %33 = accent, %34 = mono.
+    // %1..%28 = palette, %29..%32 = toolbar*, %33 = accent, %34 = mono, %35 = grid border, %36 = focus ring.
     const QString css = QStringLiteral(
         /* ── Global ── */
         "QWidget { background: %1; color: %27; }"
@@ -398,6 +595,15 @@ void CalculatorView::applyTheme(bool dark, const QString &accent)
         "QPushButton#bitOffB { background: %22; border: 1px solid %23; border-radius: 2px; }"
         "QPushButton#bitOn { background: %33; border: 1px solid %33; border-radius: 2px; }"
         "QPushButton#bitDisabled { background: %24; border: 1px solid %25; border-radius: 2px; }"
+        /* ── Bit cells in a marquee selection — contrast border over the value bg ── */
+        "QPushButton#bitOffA[bitsel=\"1\"], QPushButton#bitOffB[bitsel=\"1\"],"
+        "QPushButton#bitOn[bitsel=\"1\"], QPushButton#bitDisabled[bitsel=\"1\"]"
+        " { border: 2px solid %8; border-radius: 2px; }"
+        /* ── Keyboard-focus ring — declared AFTER [bitsel] so it wins on a cell
+         *    that is both selected and focused (equal specificity → later wins) ── */
+        "QPushButton#bitOffA[kfocus=\"1\"], QPushButton#bitOffB[kfocus=\"1\"],"
+        "QPushButton#bitOn[kfocus=\"1\"], QPushButton#bitDisabled[kfocus=\"1\"]"
+        " { border: 2px solid %36; border-radius: 2px; }"
         /* ── Labels / check-boxes ── */
         "QLabel { color: %27; background: transparent; }"
         "QLabel#gridLabel { color: %26; }"
@@ -411,7 +617,7 @@ void CalculatorView::applyTheme(bool dark, const QString &accent)
         "QWidget#toolbar { background: %29; border: none; border-radius: 0; color: %27; }"
         "QWidget#toolbar QLabel { color: %27; }"
         "QWidget#toolbar QCheckBox { color: %27; }"
-        "QWidget#gridPanel { background: %1; border: 1px solid %7; border-radius: 4px; }"
+        "QWidget#gridPanel { background: %1; border: 1px solid %35; border-radius: 4px; }"
         /* ── Toolbar separator ── */
         "QFrame#toolbarSep { background: %30; border: none; max-height: 16px; }"
         /* ── Width capsule (segmented-control container) ── */
@@ -435,7 +641,9 @@ void CalculatorView::applyTheme(bool dark, const QString &accent)
     .arg(p.bitOffA, p.bitOffB, p.bitBorder, p.bitDisabled, p.bitDisabledBorder, p.gridLabel, p.text, p.subtext) // 21..28
     .arg(p.toolbarBg, p.toolbarSep, p.widthCapsuleBg, p.widthText)                                           // 29..32
     .arg(A)                                                                                                    // 33
-    .arg(mono);                                                                                                  // 34
+    .arg(mono)                                                                                                 // 34
+    .arg(gridBorder)                                                                                          // 35
+    .arg(focusRing);                                                                                            // 36
 
     setStyleSheet(css);
 
@@ -458,6 +666,7 @@ void CalculatorView::applyTheme(bool dark, const QString &accent)
 // high-DPI displays. main() sets PassThrough rounding so fractional factors are
 // honoured exactly.
 static constexpr int kBitCellPx = 16;   // logical px; tuned to the 9pt mono glyph
+static constexpr int kNibbleGapPx = 6;  // extra gap between 4-bit nibble groups
 
 // ---------------------------------------------------------------------------
 // layout
@@ -504,6 +713,13 @@ void CalculatorView::buildLayout()
     sep->setFixedWidth(1);
     tb->addSpacing(8);
     tb->addWidget(sep);
+    tb->addSpacing(8);
+
+    // [Base: BIN] — binary-entry toggle. Same #base chrome as the HEX/OCT/DEC
+    // selectors below (checkable, accent-filled when active), placed between the
+    // theme toggle and the W width group. Registers into baseBtns_[0], so it
+    // checks/unchecks in lock-step with the others via setActiveBase().
+    tb->addWidget(makeBaseButton(tr("BIN"), "BIN"));
     tb->addSpacing(8);
 
     // → push width group to the right
@@ -562,9 +778,10 @@ void CalculatorView::buildLayout()
     auto topHBox = new QHBoxLayout;
     topHBox->setSpacing(4);
 
-    auto gridPanel = new QWidget(this);
-    gridPanel->setObjectName("gridPanel");
-    auto grid = new QGridLayout(gridPanel);
+    gridPanel_ = new QWidget(this);
+    gridPanel_->setObjectName("gridPanel");
+    gridPanel_->installEventFilter(this);   // empty-area clicks → deselect
+    auto grid = new QGridLayout(gridPanel_);
     grid->setContentsMargins(6, 5, 6, 7);
     grid->setHorizontalSpacing(2);
     grid->setVerticalSpacing(1);
@@ -579,14 +796,14 @@ void CalculatorView::buildLayout()
             const int nibLow  = nibHigh - 3;
 
             // Left boundary label (high bit of nibble)
-            auto hdrL = new QLabel(QString::number(nibHigh), gridPanel);
+            auto hdrL = new QLabel(QString::number(nibHigh), gridPanel_);
             hdrL->setObjectName("gridLabel");
             QFont hf = hdrL->font(); hf.setPointSize(7); hdrL->setFont(hf);
             hdrL->setAlignment(Qt::AlignHCenter | Qt::AlignBottom);
             grid->addWidget(hdrL, headerRow, g * 5);
 
             // Right boundary label (low bit of nibble)
-            auto hdrR = new QLabel(QString::number(nibLow), gridPanel);
+            auto hdrR = new QLabel(QString::number(nibLow), gridPanel_);
             hdrR->setObjectName("gridLabel");
             hdrR->setFont(hf);
             hdrR->setAlignment(Qt::AlignHCenter | Qt::AlignBottom);
@@ -594,20 +811,31 @@ void CalculatorView::buildLayout()
 
             for (int b = 0; b < 4; ++b) {
                 const int bit = nibHigh - b;
-                auto btn = new QPushButton(gridPanel);
+                auto btn = new QPushButton(gridPanel_);
                 btn->setFixedSize(kBitCellPx, kBitCellPx);
                 btn->setFocusPolicy(Qt::NoFocus);
                 btn->setText(QString());
                 btn->setProperty("bit", bit);
                 btn->installEventFilter(this);
-                connect(btn, &QPushButton::clicked, this, [this, bit]{ emit bitToggled(bit); });
+                connect(btn, &QPushButton::clicked, this, [this, bit]{
+                    if (suppressClick_) { suppressClick_ = false; return; }  // drag-select
+                    emit bitToggled(bit);
+                });
                 bitButtons_[bit] = btn;
                 grid->addWidget(btn, dataRow, g * 5 + b);
             }
-            // nibble spacer column sits at g*5+4 (gaps 0..2)
+            // Nibble-group gap: a fixed-width spacer in the boundary column
+            // (g*5+4) widens the break between 4-bit groups so each nibble
+            // reads as a unit. Omitted after the last nibble (g==3) — no gap
+            // is needed at a row's right edge.
+            if (g < 3) {
+                grid->addItem(new QSpacerItem(kNibbleGapPx, 0,
+                                              QSizePolicy::Fixed, QSizePolicy::Minimum),
+                              dataRow, g * 5 + 4);
+            }
         }
     }
-    topHBox->addWidget(gridPanel, 3);
+    topHBox->addWidget(gridPanel_, 3);
 
     // RPN stack (right, expanded)
     auto rpnGroup = new QGroupBox(tr("RPN  T Z Y X"), this);
@@ -841,6 +1069,18 @@ int CalculatorView::baseIndex(const QString &token)
     if (token == "HEX") return 3;
     Q_ASSERT(token == "BIN");
     return 0;
+}
+
+bool CalculatorView::isDigitValidForBase(QChar c, const QString &baseToken)
+{
+    // Mirrors CalculatorModel::isValidDigit — kept in the View so the keyboard
+    // handler can gate keys without importing the Model. 'c' is already an
+    // upper-cased hex digit (0–9 or A–F) at the one call site.
+    c = c.toUpper();
+    if (baseToken == "BIN") return c == '0' || c == '1';
+    if (baseToken == "OCT") return c >= '0' && c <= '7';
+    if (baseToken == "DEC") return c >= '0' && c <= '9';
+    return true;   // HEX — every 0–9 / A–F is legal
 }
 
 void CalculatorView::applyDigitEnables(const QString &baseToken)

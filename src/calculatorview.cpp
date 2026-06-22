@@ -98,6 +98,10 @@ CalculatorView::CalculatorView(QWidget *parent)
     accent_ = accentForBase("DEC", dark_);
     buildLayout();
     applyTheme(dark_, accent_);
+    // Clipboard shortcuts are View-global: every QLineEdit child is filtered so
+    // Ctrl+C/Ctrl+V keep working when a read-only display field holds focus.
+    for (QLineEdit *le : findChildren<QLineEdit *>())
+        le->installEventFilter(this);
 }
 
 void CalculatorView::showEvent(QShowEvent *event)
@@ -123,6 +127,11 @@ void CalculatorView::setHexText(const QString &text)     { hexDisplay_->setText(
 void CalculatorView::setOctalText(const QString &text)   { octDisplay_->setText(text); }
 void CalculatorView::setDecimalText(const QString &text) { decimalDisplay_->setText(text); }
 void CalculatorView::setBinaryText(const QString &text) { binaryText_ = text; }
+
+QString CalculatorView::hexText() const     { return hexDisplay_->text(); }
+QString CalculatorView::octalText() const   { return octDisplay_->text(); }
+QString CalculatorView::decimalText() const { return decimalDisplay_->text(); }
+QString CalculatorView::binaryText() const  { return binaryText_; }
 void CalculatorView::setCharText(const QString &text)
 {
     charText_ = text;
@@ -337,6 +346,25 @@ bool CalculatorView::eventFilter(QObject *watched, QEvent *event)
             // Not consumed
         }
     }
+    // Clipboard shortcuts must fire on the View regardless of which child holds
+    // focus. A read-only QLineEdit otherwise swallows Ctrl+V (paste silently
+    // dropped — the "0xffff won't paste" bug) and on Ctrl+C copies its own raw
+    // grouped display text instead of the clean active-base value. Route both
+    // to the same handlers the top-level keyPressEvent uses.
+    if (event->type() == QEvent::KeyPress) {
+        auto *ke = static_cast<QKeyEvent *>(event);
+        if (ke->matches(QKeySequence::Copy)) {
+            copyActiveValue();
+            return true;
+        }
+        if (ke->matches(QKeySequence::Paste)) {
+            const QString clip = QGuiApplication::clipboard()->text();
+            if (!clip.isEmpty())
+                emit pasteRequested(clip);
+            return true;
+        }
+    }
+
     // A left-click on the grid's empty area (margins, nibble gaps, inter-row
     // space — anywhere no bit cell sits) drops the current bit selection.
     if (watched == gridPanel_ && event->type() == QEvent::MouseButtonPress) {
@@ -441,6 +469,16 @@ void CalculatorView::copyActiveValue()
         text = fld ? fld->text() : decimalDisplay_->text();
     }
     text.remove(' ');
+    // HEX/BIN render width-padded with leading zeros (e.g. "0000…1234"); strip
+    // them so the copied value is bare — OCT has none already, so this is a
+    // no-op there. Keep one digit so a value of 0 copies as "0", not "".
+    // DEC is untouched (no leading zeros, and may carry a leading '-').
+    if (activeBase_ != QLatin1String("DEC")) {
+        int cut = 0;
+        while (cut < text.size() - 1 && text.at(cut) == QLatin1Char('0'))
+            ++cut;
+        text = text.mid(cut);
+    }
     QGuiApplication::clipboard()->setText(text);
     setStatusMessage(tr("Copied: %1").arg(text));
 }

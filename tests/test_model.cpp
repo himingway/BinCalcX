@@ -286,6 +286,129 @@ int main()
     m.setSignedMode(false);
     { auto s = m.stackStrings(); check(s[3] == QStringLiteral("8'd255"), "verilog unsigned 8'd255", 0, 0); }
 
+    // ===== extended: commands & ops not covered above ==========================
+    // NOT — bitwise complement within width
+    m.setBitWidth(8); m.setSignedMode(false); m.clearAll();
+    m.loadFromText("0x0F"); m.applyNot();
+    check((long long)m.xRegister() == 0xF0, "NOT 0x0F (8-bit) -> 0xF0", (long long)m.xRegister(), 0xF0);
+
+    // NEG — two's complement within width
+    m.clearAll(); m.loadFromText("5"); m.negate();
+    check((long long)m.xRegister() == 0xFB, "NEG 5 (8-bit) -> 0xFB", (long long)m.xRegister(), 0xFB);
+    m.setSignedMode(true);
+    check(m.decimalString().toStdString() == "-5", "NEG 5 signed view -5", 0, 0);
+    m.setSignedMode(false);
+
+    // OR
+    m.setBitWidth(64); m.clearAll(); m.setBase(CalculatorModel::Base::Hexadecimal);
+    m.loadFromText("0xF0"); m.enter(); m.loadFromText("0x0F");
+    m.applyBinaryOp(CalculatorModel::Op::Or);
+    check((long long)m.xRegister() == 0xFF, "0xF0 OR 0x0F -> 0xFF", (long long)m.xRegister(), 0xFF);
+
+    // SHL / SHR as binary ops (Y shifted by X) — distinct from single-bit shifts
+    m.clearAll(); m.loadFromText("0x1"); m.enter(); m.loadFromText("0x4");
+    m.applyBinaryOp(CalculatorModel::Op::Shl);
+    check((long long)m.xRegister() == 16, "1 SHL 4 -> 16", (long long)m.xRegister(), 16);
+    m.clearAll(); m.loadFromText("0x100"); m.enter(); m.loadFromText("0x4");
+    m.applyBinaryOp(CalculatorModel::Op::Shr);
+    check((long long)m.xRegister() == 16, "0x100 SHR 4 -> 16", (long long)m.xRegister(), 16);
+    // shift amount >= Y's width collapses to 0
+    m.setBitWidth(8); m.clearAll(); m.loadFromText("0x1"); m.enter(); m.loadFromText("0x8");
+    m.applyBinaryOp(CalculatorModel::Op::Shl);
+    check((long long)m.xRegister() == 0, "8-bit 1 SHL 8 (clamp) -> 0", (long long)m.xRegister(), 0);
+    m.setBitWidth(64);
+
+    // DIV / MOD by zero yield 0 (no crash, no exception)
+    m.clearAll(); m.loadFromText("0x5"); m.enter(); m.loadFromText("0x0");
+    m.applyBinaryOp(CalculatorModel::Op::Div);
+    check((long long)m.xRegister() == 0, "5 DIV 0 -> 0", (long long)m.xRegister(), 0);
+    m.clearAll(); m.loadFromText("0x5"); m.enter(); m.loadFromText("0x0");
+    m.applyBinaryOp(CalculatorModel::Op::Mod);
+    check((long long)m.xRegister() == 0, "5 MOD 0 -> 0", (long long)m.xRegister(), 0);
+
+    // CLX clears X, keeps its width
+    m.setBitWidth(16); m.clearAll(); m.loadFromText("0xABCD"); m.clearX();
+    check((long long)m.xRegister() == 0, "CLX -> 0", (long long)m.xRegister(), 0);
+    check((long long)m.bitWidth() == 16, "CLX keeps width 16", (long long)m.bitWidth(), 16);
+
+    // CLR zeroes every register at the W-selected width
+    m.setBitWidth(32); m.clearAll();
+    check((long long)m.xRegister() == 0 && m.bitWidth() == 32, "CLR -> 0 at width 32", 0, 0);
+
+    // BSP drops one typed digit; empty buffer stays "0"
+    m.setBitWidth(64); m.setBase(CalculatorModel::Base::Decimal); m.clearAll();
+    m.inputDigit("1"); m.inputDigit("2"); m.inputDigit("3"); m.backspace();
+    check((long long)m.xRegister() == 12, "BSP 123 -> 12", (long long)m.xRegister(), 12);
+    m.backspace();
+    check((long long)m.xRegister() == 1, "BSP 12 -> 1", (long long)m.xRegister(), 1);
+    m.backspace();
+    check((long long)m.xRegister() == 0, "BSP 1 -> 0", (long long)m.xRegister(), 0);
+
+    // toggleBit flips one bit, ignores out-of-range bits
+    m.clearAll(); m.toggleBit(0);
+    check((long long)m.xRegister() == 1, "toggle bit 0 -> 1", (long long)m.xRegister(), 1);
+    m.toggleBit(3);
+    check((long long)m.xRegister() == 9, "toggle bit 3 -> 9", (long long)m.xRegister(), 9);
+    m.toggleBit(0);
+    check((long long)m.xRegister() == 8, "toggle bit 0 off -> 8", (long long)m.xRegister(), 8);
+    m.toggleBit(-1); m.toggleBit(64);   // ignored (width 64: bits 0..63 valid)
+    check((long long)m.xRegister() == 8, "out-of-range toggle ignored", (long long)m.xRegister(), 8);
+
+    // ROLL rotates the stack down (X<-Y, Y<-Z, Z<-T, T<-X)
+    m.clearAll();
+    m.inputDigit("1"); m.enter(); m.inputDigit("2"); m.enter();
+    m.inputDigit("3"); m.enter(); m.inputDigit("4");   // X=4 Y=3 Z=2 T=1
+    m.rollDown();                                       // X=3 Y=2 Z=1 T=4
+    check((long long)m.xRegister() == 3, "ROLL: X <- Y", (long long)m.xRegister(), 3);
+
+    // SWAP exchanges X and Y
+    m.clearAll(); m.inputDigit("5"); m.enter(); m.inputDigit("3");   // X=3 Y=5
+    m.swapXY();
+    check((long long)m.xRegister() == 5, "SWAP: X <- Y", (long long)m.xRegister(), 5);
+
+    // setBitWidth masks the live value to the new width
+    m.clearAll(); m.loadFromText("0x1FF"); m.setBitWidth(8);
+    check((long long)m.xRegister() == 0xFF, "setBitWidth(8) masks 0x1FF -> 0xFF", (long long)m.xRegister(), 0xFF);
+    m.setBitWidth(64);
+
+    // applySlice narrows X to [lo..hi] and extracts those bits
+    m.clearAll(); m.loadFromText("0xFF"); m.applySlice(0, 3);
+    check((long long)m.xRegister() == 0xF && m.bitWidth() == 4, "applySlice[0..3] of 0xFF -> 0xF w4", 0, 0);
+    m.clearAll(); m.loadFromText("0xFF"); m.applySlice(4, 7);
+    check((long long)m.xRegister() == 0xF, "applySlice[4..7] of 0xFF -> 0xF", (long long)m.xRegister(), 0xF);
+
+    // pushSlice lifts with the slice into Y; X is unchanged (vs applySlice)
+    m.clearAll(); m.loadFromText("0xFF"); m.pushSlice(0, 3);
+    check((long long)m.xRegister() == 0xFF && m.bitWidth() == 64, "pushSlice leaves X=0xFF w64", 0, 0);
+    m.swapXY();   // bring the slice (Y) back to X for inspection
+    check((long long)m.xRegister() == 0xF, "pushSlice placed 0xF in Y", (long long)m.xRegister(), 0xF);
+
+    // concatenate {Y,X} joins Y and X by their widths
+    m.clearAll(); m.loadFromText("0xF"); m.applySlice(0, 3);   // X = 4'hF
+    m.enter();                                                 // Y = 4'hF
+    m.concatenate();
+    check((long long)m.xRegister() == 0xFF && m.bitWidth() == 8, "{Y,X} 4'hF,4'hF -> 8'hFF", 0, 0);
+
+    // replicate {N{X}} with N=1 is identity
+    m.clearAll(); m.loadFromText("0x5"); m.applySlice(0, 2);   // X = 3'b101
+    m.enter();                                                 // Y = 3'b101
+    m.loadFromText("0x1"); m.swapXY();                         // X = 3'b101, Y = 3'b001 (N=1)
+    m.replicate();
+    check((long long)m.xRegister() == 5 && m.bitWidth() == 3, "{1{3'b101}} -> 3'b101", 0, 0);
+    m.setBitWidth(64);
+
+    // sliceVerilogLiteral previews a slice without mutating X
+    m.setBase(CalculatorModel::Base::Hexadecimal); m.clearAll(); m.loadFromText("0xAB");
+    check(m.sliceVerilogLiteral(0, 3).toStdString() == "4'hB", "slice preview [0..3] -> 4'hB", 0, 0);
+    check((long long)m.xRegister() == 0xAB, "slice preview leaves X intact", (long long)m.xRegister(), 0xAB);
+
+    // out-of-base digit entry is rejected at the Model layer too
+    m.setBase(CalculatorModel::Base::Binary); m.clearAll();
+    m.inputDigit("5");   // invalid for BIN
+    check((long long)m.xRegister() == 0, "BIN rejects digit '5'", (long long)m.xRegister(), 0);
+    m.inputDigit("1");
+    check((long long)m.xRegister() == 1, "BIN accepts digit '1'", (long long)m.xRegister(), 1);
+
     std::printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);
     return failures ? 1 : 0;
 }

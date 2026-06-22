@@ -44,6 +44,11 @@ public:
     void setOctalText(const QString &text);
     void setDecimalText(const QString &text);
     void setBinaryText(const QString &text);  // stored for clipboard (no field)
+    // Read-only mirrors of the display fields (for tests / introspection).
+    QString hexText() const;
+    QString octalText() const;
+    QString decimalText() const;
+    QString binaryText() const;
     void setCharText(const QString &text);
     void setStackValues(const std::array<QString, 4> &values);
     void setXField(const QString &text);          // override the X register (slice preview)

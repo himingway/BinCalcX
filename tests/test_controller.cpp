@@ -114,6 +114,36 @@ private slots:
         QVERIFY(spy.count() >= 1);
     }
 
+    // ── SIZE: X as a byte count → human-readable binary (IEC) units ────────────
+    void sizeDisplayEndToEnd()
+    {
+        model->loadFromText("0x0");
+        QCOMPARE(view->sizeText(), QStringLiteral("0 B"));
+        model->loadFromText("0x400");          // 1024
+        QCOMPARE(view->sizeText(), QStringLiteral("1 KiB"));
+        model->loadFromText("0x4000");         // 16384
+        QCOMPARE(view->sizeText(), QStringLiteral("16 KiB"));
+        model->loadFromText("0x4001");         // 16385 — clean unit + 1 byte
+        QCOMPARE(view->sizeText(), QStringLiteral("16 KiB + 1 B"));
+        model->loadFromText("0x20000");        // 131072
+        QCOMPARE(view->sizeText(), QStringLiteral("128 KiB"));
+        model->loadFromText("0x100000");       // 1 MiB
+        QCOMPARE(view->sizeText(), QStringLiteral("1 MiB"));
+        model->loadFromText("0x120001");       // 1 MiB + 128 KiB + 1 B
+        QCOMPARE(view->sizeText(), QStringLiteral("1 MiB + 128 KiB + 1 B"));
+        // "all-ones tail" masks → round − 1 B shorthand (trailing hex F-run ≥ 3)
+        model->loadFromText("0x3FF");          // F-run 2 → ordinary form
+        QCOMPARE(view->sizeText(), QStringLiteral("1023 B"));
+        model->loadFromText("0xFFF");          // 4 KiB − 1 B
+        QCOMPARE(view->sizeText(), QStringLiteral("4 KiB - 1 B"));
+        model->loadFromText("0xEEFFFFFFF");    // 59 GiB + 768 MiB − 1 B
+        QCOMPARE(view->sizeText(), QStringLiteral("59 GiB + 768 MiB - 1 B"));
+        model->loadFromText("0xFFFFFFFF");     // 4 GiB − 1 B
+        QCOMPARE(view->sizeText(), QStringLiteral("4 GiB - 1 B"));
+        model->loadFromText("0xFFFFFFFFFFFFFFFF");  // 16 EiB − 1 B (round value overflows)
+        QCOMPARE(view->sizeText(), QStringLiteral("16 EiB - 1 B"));
+    }
+
 private:
     CalculatorModel *model = nullptr;
     CalculatorView *view = nullptr;

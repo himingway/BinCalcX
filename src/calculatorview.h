@@ -51,6 +51,8 @@ public:
     QString binaryText() const;
     void setCharText(const QString &text);
     void setStackValues(const std::array<QString, 4> &values);
+    // X read as a byte count → human-readable binary size (KiB/MiB/GiB…).
+    QString sizeText() const;
     void setXField(const QString &text);          // override the X register (slice preview)
     void setSignedMode(bool enabled);
     void setActiveBase(const QString &baseToken);   // accent + keypad enables
@@ -90,6 +92,7 @@ private:
     QLineEdit *octDisplay_     = nullptr;
     QLineEdit *decimalDisplay_ = nullptr;
     QLabel    *charDisplay_    = nullptr;   // rich text → dimmed '.' placeholders
+    QLabel    *sizeDisplay_    = nullptr;   // X as a human-readable byte size
     std::array<QLineEdit *, 4> stackDisplays_{};
 
     // controls
@@ -135,6 +138,7 @@ private:
     void buildLayout();
     void copyActiveValue();       // Ctrl+C → clipboard, current base
     void renderCharDisplay();     // turn charText_ into dimmed-placeholder HTML
+    void renderSizeDisplay();     // X → human-readable byte size (binary/IEC units)
     void applyTheme(bool dark, const QString &accent);
     static QString accentForBase(const QString &baseToken, bool dark = true);
 

@@ -156,6 +156,58 @@ void CalculatorView::renderCharDisplay()
     charDisplay_->setText(html);
 }
 
+// Base-1024 place-value breakdown of a positive byte count: each non-zero
+// "digit" (0..1023; the EiB place tops out at 15 for a 64-bit value) is shown
+// with its IEC unit and joined by " + ". E.g. 0x120001 → "1 MiB + 128 KiB + 1 B".
+static QString decomposeSize(quint64 v)
+{
+    static const char * const kUnits[] = {"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"};
+    QString out;
+    quint64 rem = v;
+    for (int u = 6; u >= 0; --u) {
+        const quint64 base = 1ULL << (10 * u);   // safe: max shift is 60
+        const quint64 digit = rem / base;
+        rem %= base;
+        if (digit == 0)
+            continue;
+        if (!out.isEmpty())
+            out += QStringLiteral(" + ");
+        out += QStringLiteral("%1 %2").arg(digit).arg(QString::fromLatin1(kUnits[u]));
+    }
+    return out;
+}
+
+QString CalculatorView::sizeText() const
+{
+    // X read as a byte count → human-readable binary (IEC) size.
+    const quint64 v = lastBitValue_;
+    if (v == 0)
+        return QStringLiteral("0 B");
+
+    // Shorthand for "all-ones tail" masks: a value whose hex ends in a run of
+    // F's (≥ 3 digits — i.e. the low 12+ bits are all 1) is one byte below a
+    // round number. 0xEEFFFFFFF = 0xEF0000000 − 1 = 59 GiB + 768 MiB − 1 B, and
+    // 0xFFFFFFFF = 4 GiB − 1 B. Show that round value's (strictly shorter)
+    // breakdown with a " - 1 B" tail instead of the long all-1023 form. The
+    // round value is a multiple of 4096, so it never carries a byte place — the
+    // " - 1 B" is unambiguous. Gated on the F-run so ordinary values are untouched.
+    const QString hex = QString::number(v, 16);
+    int frun = 0;
+    for (int i = hex.size() - 1; i >= 0 && hex.at(i) == QLatin1Char('f'); --i)
+        ++frun;
+    if (frun >= 3) {
+        if (v == ~quint64(0))            // 2^64−1: the round value (2^64 = 16 EiB) overflows
+            return QStringLiteral("16 EiB - 1 B");
+        return decomposeSize(v + 1) + QStringLiteral(" - 1 B");
+    }
+    return decomposeSize(v);
+}
+
+void CalculatorView::renderSizeDisplay()
+{
+    sizeDisplay_->setText(sizeText());
+}
+
 void CalculatorView::setStackValues(const std::array<QString, 4> &values)
 {
     for (int i = 0; i < 4; ++i)
@@ -228,6 +280,11 @@ void CalculatorView::refreshBits(quint64 value)
         btn->style()->unpolish(btn);
         btn->style()->polish(btn);
     }
+
+    // The byte-size readout derives from the same X value as the bit grid, so it
+    // stays in lock-step — re-render here (the early-out above already guards the
+    // "no change" case, so this only runs when the value actually moved).
+    renderSizeDisplay();
 }
 
 void CalculatorView::setActiveWidth(int width)
@@ -628,6 +685,9 @@ void CalculatorView::applyTheme(bool dark, const QString &accent)
         /* ── CHR display (label, rich text — looks like a field) ── */
         "QLabel#chrDisplay { background: %3; color: %4; border: 1px solid %7; border-radius: 3px;"
         "  padding: 2px 5px; font-family: %34; }"
+        /* ── SIZE display (label — same field chrome as CHR) ── */
+        "QLabel#sizeDisplay { background: %3; color: %4; border: 1px solid %7; border-radius: 3px;"
+        "  padding: 2px 5px; font-family: %34; }"
         "QLineEdit#stackZT { background: %17; color: %18; border: 1px solid %7; border-radius: 3px;"
         "  padding: 2px 5px; font-family: %34; }"
         "QLineEdit#stackY { background: %17; color: %19; border: 1px solid %7; border-radius: 3px;"
@@ -986,6 +1046,26 @@ void CalculatorView::buildLayout()
     charDisplay_->setFixedWidth(chrW);
     row2->addWidget(charDisplay_);
     baseRows->addLayout(row2);
+
+    //  [SIZE] [X read as a byte count — human-readable binary units]
+    // A fifth "interpretation" of X (alongside HEX/OCT/DEC/CHR): the same value
+    // seen as a storage size. Binary (IEC) units, so 0x4000 = 16 KiB.
+    auto row3 = new QHBoxLayout;
+    row3->setSpacing(4);
+    auto sizeLabel = new QLabel(tr("SIZE"), this);
+    sizeLabel->setMinimumWidth(36);
+    sizeLabel->setAlignment(Qt::AlignCenter);
+    QFont zf = sizeLabel->font(); zf.setBold(true); sizeLabel->setFont(zf);
+    row3->addWidget(sizeLabel);
+    sizeDisplay_ = new QLabel(this);
+    sizeDisplay_->setObjectName("sizeDisplay");
+    sizeDisplay_->setAlignment(Qt::AlignCenter);
+    sizeDisplay_->setTextInteractionFlags(Qt::NoTextInteraction);
+    sizeDisplay_->setToolTip(tr("X read as a byte count, in binary units "
+                                "(KiB = 1024, MiB, GiB, …)."));
+    sizeDisplay_->setMinimumHeight(baseFieldH);
+    row3->addWidget(sizeDisplay_, 1);
+    baseRows->addLayout(row3);
     root->addLayout(baseRows);
 
     // --- controls: keypad (4x4) + ops (5x4) side by side ---

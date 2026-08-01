@@ -16,7 +16,7 @@ jobs:
     name: Windows build → Release
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Qt 6 (MSVC)
         uses: jurplel/install-qt-action@v4
@@ -45,7 +45,7 @@ jobs:
             -DestinationPath "BinCalc-$env:GITHUB_REF_NAME-windows-x64.zip"
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: BinCalc-*-windows-x64.zip
           generate_release_notes: true

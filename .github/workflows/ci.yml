@@ -16,7 +16,7 @@ jobs:
     name: Linux · build + test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Qt 6
         run: |
@@ -40,7 +40,7 @@ jobs:
     name: Linux · qmake fallback build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Qt 6 + qmake
         run: |
@@ -57,7 +57,7 @@ jobs:
     name: Windows · build + runnable package
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Qt 6 (MSVC)
         uses: jurplel/install-qt-action@v4
@@ -84,7 +84,7 @@ jobs:
             --no-opengl-sw "build/Release/BinCalc.exe"
 
       - name: Upload runnable package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: BinCalc-windows-x64
           path: build/Release/

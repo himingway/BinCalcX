@@ -53,7 +53,7 @@ above each group.
 ### SystemVerilog-literal stack
 
 The four-register RPN stack is printed as **SystemVerilog literals** — e.g.
-`8'hFF`, `4'b1101`, `32'hDEAD_BEEF` — one per register (T · Z · Y · X), with
+`8'hFF`, `4'b1101`, `32'hDEADBEEF` — one per register (T · Z · Y · X), with
 the width prefix matching each register's own bit width. The X register is
 rendered **large, bold, and accent-filled** as the primary readout; T and Z are
 subdued; Y sits in between.
@@ -65,6 +65,9 @@ subdued; Y sits in between.
   highlighted.
 - **CHR** — full 64-bit decode, always shown as exactly 8 monospace cells
   (MSB→LSB); non-printable bytes display as a dimmed `.`.
+- **SIZE** — X read as a byte count in binary (IEC) units, decomposed by place
+  value (`0x120001` → `1 MiB + 128 KiB + 1 B`); all-ones masks show the round
+  value minus one byte (`0xFFFFFFFF` → `4 GiB - 1 B`).
 
 ### Operations
 
@@ -166,7 +169,7 @@ display):
 FF XOR 0F   (HEX)     → F0
 200 ENTER 100 + (W8)  → 44         (masked to 8 bits)
 12'hABC {,} 4'h3      → 16'h0ABC3  ({Y,X} concatenation)
-8'hFF {N}             → 32'hFFFF_FFFF  (replicate X, N = Y)
+8'hFF {N}             → 64'hFFFFFFFFFFFFFFFF  (replicate X, N = Y)
 ```
 
 ## License

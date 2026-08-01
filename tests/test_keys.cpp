@@ -115,6 +115,35 @@ private slots:
         QCOMPARE(toggledBit(), 63);
     }
 
+    // ── a read-only display field holding focus must not deaden the keyboard ──
+    void keysWorkWhileFieldFocused()
+    {
+        // Clicking a field gives it focus; non-cursor keys are forwarded from
+        // the field to the View's own handler instead of being swallowed.
+        QLineEdit *fld = view->findChild<QLineEdit *>();
+        QVERIFY(fld != nullptr);
+        QSignalSpy spy(view.data(), &CalculatorView::digitPressed);
+        QKeyEvent p(QEvent::KeyPress, Qt::Key_5, Qt::NoModifier, QChar('5'));
+        QKeyEvent r(QEvent::KeyRelease, Qt::Key_5, Qt::NoModifier, QChar('5'));
+        qApp->notify(fld, &p);
+        qApp->notify(fld, &r);
+        QCOMPARE(spy.count(), 1);
+        QCOMPARE(spy.takeFirst().at(0).toString(), QStringLiteral("5"));
+    }
+    void cursorKeysStayInField()
+    {
+        // Cursor/selection keys remain with the field (text selection inside a
+        // display still works) — they must not reach the bit-grid handler.
+        QLineEdit *fld = view->findChild<QLineEdit *>();
+        QVERIFY(fld != nullptr);
+        QSignalSpy spy(view.data(), &CalculatorView::bitToggled);
+        QKeyEvent p(QEvent::KeyPress, Qt::Key_Left, Qt::NoModifier);
+        QKeyEvent r(QEvent::KeyRelease, Qt::Key_Left, Qt::NoModifier);
+        qApp->notify(fld, &p);
+        qApp->notify(fld, &r);
+        QCOMPARE(spy.count(), 0);
+    }
+
 private:
     QScopedPointer<CalculatorView> view;
 

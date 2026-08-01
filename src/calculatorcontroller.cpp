@@ -104,7 +104,12 @@ void CalculatorController::onBitWidthChanged(int width)
 {
     view_.setActiveWidth(width);     // grey out high cells >= width (no rebuild)
     refreshView();                   // refreshBits() applies the new width
-    settings_->setValue("calc/bitWidth", width);
+    // Persist only the standard selector widths (8/16/32/64). Slice/concat/
+    // replicate can leave X at an arbitrary width (4, 12, …), which
+    // setBitWidth() refuses on restore — saving one would desync the View's
+    // grey-out from the Model's real width at the next launch.
+    if (width == 8 || width == 16 || width == 32 || width == 64)
+        settings_->setValue("calc/bitWidth", width);
 }
 
 void CalculatorController::onShift(bool left)
@@ -163,10 +168,15 @@ void CalculatorController::restorePreferences()
     // theme (dark by default)
     view_.setTheme(settings_->value("ui/theme", true).toBool());
 
-    // bit width (64 by default)
+    // bit width (64 by default). Guard against a stale non-standard value
+    // persisted by older builds (defence in depth — onBitWidthChanged now
+    // saves only 8/16/32/64): setBitWidth() would ignore it while the View
+    // would still grey out cells, desyncing grid vs Model.
     const int width = settings_->value("calc/bitWidth", 64).toInt();
-    model_.setBitWidth(width);
-    view_.setActiveWidth(width);          // force-sync even if model skips emit
+    const int stdWidth = (width == 8 || width == 16 || width == 32 || width == 64)
+                             ? width : 64;
+    model_.setBitWidth(stdWidth);
+    view_.setActiveWidth(stdWidth);       // force-sync even if model skips emit
 
     // number base + signedness
     const int baseInt = settings_->value("calc/base",
@@ -195,6 +205,9 @@ CalculatorModel::Op CalculatorController::toOp(const QString &token)
     if (token == "XOR") return CalculatorModel::Op::Xor;
     if (token == "SHL") return CalculatorModel::Op::Shl;
     if (token == "SHR") return CalculatorModel::Op::Shr;
+    // Unknown token = View/Controller vocabulary drift — abort loudly in
+    // debug builds instead of silently computing the wrong op.
+    Q_ASSERT_X(false, "toOp", qPrintable(QStringLiteral("unknown op token: %1").arg(token)));
     return CalculatorModel::Op::Add;
 }
 
@@ -203,6 +216,7 @@ CalculatorModel::Base CalculatorController::toBase(const QString &token)
     if (token == "HEX") return CalculatorModel::Base::Hexadecimal;
     if (token == "DEC") return CalculatorModel::Base::Decimal;
     if (token == "OCT") return CalculatorModel::Base::Octal;
+    Q_ASSERT_X(false, "toBase", qPrintable(QStringLiteral("unknown base token: %1").arg(token)));
     return CalculatorModel::Base::Binary;
 }
 

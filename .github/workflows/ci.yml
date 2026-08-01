@@ -32,6 +32,26 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
+  # ---------------------------------------------------- qmake fallback build
+  # bincalc.pro is still a supported fallback; keep it honest so adding a
+  # source file to CMakeLists.txt without updating the .pro fails CI, not a
+  # user's build.
+  qmake:
+    name: Linux · qmake fallback build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt 6 + qmake
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qt6-base-dev qt6-qmake
+
+      - name: Build (in-tree, per the README)
+        run: |
+          qmake6 bincalc.pro
+          make -j$(nproc)
+
   # ------------------------------------------------------------------- windows
   windows:
     name: Windows · build + runnable package

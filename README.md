@@ -64,7 +64,7 @@ subdued; Y sits in between.
 - **OCT / DEC / HEX** fields — all visible at once, with the active base
   highlighted.
 - **CHR** — full 64-bit decode, always shown as exactly 8 monospace cells
-  (MSB→LSB); non-printable bytes display as `·`.
+  (MSB→LSB); non-printable bytes display as a dimmed `.`.
 
 ### Operations
 
@@ -116,15 +116,15 @@ View and Model never reference each other; intent tokens are plain strings
 Requires Qt 6 (Core + Widgets) and a C++17 compiler.
 
 ```bash
-qmake6 bincalc.pro && make -j$(nproc) && ./BinCalc     # primary
-# or, with CMake:
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j && ./build/BinCalc
 ```
 
+qmake remains supported as a legacy fallback
+(`qmake6 bincalc.pro && make -j$(nproc) && ./BinCalc`); both build paths run in CI.
+
 ### Tests
 
-Headless model tests (`tests/test_model.cpp`) are built through CMake so moc
-and linking are handled correctly:
+Headless test suites, built through CMake with `-DBINCALC_BUILD_TESTS=ON`:
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBINCALC_BUILD_TESTS=ON
@@ -132,10 +132,18 @@ cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure
 ```
 
-Tests cover arithmetic, bitwise ops, shifts, NOT, bit-toggle, negate, base
-conversion, stack roll/swap, bit-width masking / sign-extension / shift
-clamping, per-register widths, concatenation, replication, and the T/Z/Y/X
-display ordering.
+Four suites (the GUI ones run on the offscreen platform, so `ctest` needs no
+display):
+
+- `model` — pure Model: arithmetic, bitwise ops, shifts, NOT, bit-toggle,
+  negate, base conversion, stack roll/swap, width masking / sign-extension /
+  shift clamping, per-register widths, concatenation, replication, slices,
+  Verilog literals, clipboard parsing.
+- `keys` — View keyboard dispatch: digits, operators, commands, out-of-base
+  interception, bit-grid focus navigation, field-focus forwarding.
+- `clipboard` — Ctrl+C / Ctrl+V wiring.
+- `controller` — end-to-end MVC: keystrokes → Model → View refresh, SIZE
+  readout, width persistence.
 
 ## Keyboard
 

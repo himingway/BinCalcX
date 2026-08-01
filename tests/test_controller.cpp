@@ -10,9 +10,11 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QCoreApplication>
+#include <QDir>
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QObject>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QTest>
 
@@ -144,6 +146,23 @@ private slots:
         QCOMPARE(view->sizeText(), QStringLiteral("16 EiB - 1 B"));
     }
 
+    // ── width persistence: only the standard 8/16/32/64 widths reach QSettings ─
+    void standardWidthIsPersisted()
+    {
+        model->setBitWidth(8);
+        QCOMPARE(QSettings().value("calc/bitWidth", -1).toInt(), 8);
+    }
+    void sliceWidthIsNotPersisted()
+    {
+        // Regression: a non-standard width (slice/concat/replicate) must not be
+        // saved — setBitWidth() refuses it on restore, but the View would still
+        // grey out cells, desyncing the grid from the Model's real width.
+        model->loadFromText("0xFF");
+        model->applySlice(0, 3);          // X width → 4
+        QCOMPARE(model->bitWidth(), 4);
+        QCOMPARE(QSettings().value("calc/bitWidth", -1).toInt(), 64);
+    }
+
 private:
     CalculatorModel *model = nullptr;
     CalculatorView *view = nullptr;
@@ -171,6 +190,17 @@ int main(int argc, char *argv[])
 {
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication app(argc, argv);
+    // Isolate QSettings from the real app: the Controller reads prefs in
+    // restorePreferences() and writes them in onBitWidthChanged(), and ctest
+    // must not clobber the developer's actual BinCalc config. Point the store
+    // at a scratch dir and clear it so every run starts deterministic.
+    QCoreApplication::setOrganizationName(QStringLiteral("BinCalc"));
+    QCoreApplication::setApplicationName(QStringLiteral("BinCalc"));
+    const QString settingsDir = QDir::tempPath() + QStringLiteral("/bincalc-test-settings");
+    QDir(settingsDir).removeRecursively();
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir);
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+
     TestController t;
     return QTest::qExec(&t, argc, argv);
 }

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(BinCalc VERSION 1.0 LANGUAGES CXX)
+project(BinCalc VERSION 1.7.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,15 +13,19 @@ find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
 # the qwindows platform plugin is auto-linked in — otherwise a static .exe fails
 # at startup with "could not find the Qt platform plugin windows". For normal
 # shared builds it behaves identically to add_executable.
-qt_add_executable(BinCalc WIN32
+qt_add_executable(BinCalc
     src/main.cpp
     src/calculatormodel.cpp
     src/calculatorview.cpp
     src/calculatorcontroller.cpp
+    src/version.h
     assets/app.qrc
 )
 
 target_include_directories(BinCalc PRIVATE src)
+# The app version is defined once in project(VERSION) and injected here;
+# version.h keeps a fallback for the qmake build.
+target_compile_definitions(BinCalc PRIVATE BINCALC_VERSION_STRING="${PROJECT_VERSION}")
 target_link_libraries(BinCalc PRIVATE Qt6::Core Qt6::Widgets)
 
 # Windows .exe icon (explorer / taskbar / start-menu). The .rc is generated from

@@ -7,6 +7,7 @@
 #include "calculatorcontroller.h"
 #include "calculatormodel.h"
 #include "calculatorview.h"
+#include "version.h"
 
 int main(int argc, char *argv[])
 {
@@ -16,7 +17,7 @@ int main(int argc, char *argv[])
     QApplication::setHighDpiScaleFactorRoundingPolicy(
         Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
     QApplication::setApplicationName("BinCalc");
-    QApplication::setApplicationVersion("1.0");
+    QApplication::setApplicationVersion(BINCALC_VERSION_STRING);
     QApplication::setOrganizationName("BinCalc");
 
     QApplication app(argc, argv);

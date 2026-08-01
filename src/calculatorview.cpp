@@ -420,6 +420,22 @@ bool CalculatorView::eventFilter(QObject *watched, QEvent *event)
                 emit pasteRequested(clip);
             return true;
         }
+        // The display fields are read-only, yet clicking one gives it focus —
+        // which would otherwise deaden the whole keyboard until focus moves on
+        // (every keypad button is NoFocus, so nothing else can take it). Route
+        // every other key to the View's own handler; cursor/selection keys stay
+        // in the field so text selection inside a display still works.
+        if (qobject_cast<QLineEdit *>(watched)) {
+            const int k = ke->key();
+            const bool cursorKey = (k == Qt::Key_Left || k == Qt::Key_Right ||
+                                    k == Qt::Key_Up || k == Qt::Key_Down ||
+                                    k == Qt::Key_Home || k == Qt::Key_End ||
+                                    k == Qt::Key_PageUp || k == Qt::Key_PageDown);
+            if (!cursorKey && !ke->matches(QKeySequence::SelectAll)) {
+                keyPressEvent(ke);
+                return true;
+            }
+        }
     }
 
     // A left-click on the grid's empty area (margins, nibble gaps, inter-row

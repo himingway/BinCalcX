@@ -98,7 +98,7 @@ public slots:
 
     // hardware-grade operations
     void concatenate();           // {Y,X} — join Y and X by their widths
-    void replicate();             // {N{X}} — X replicated N times (N = Y)
+    void replicate();             // {N{X}} — X replicated N times (N = Y; N = 0 is a no-op)
     void applySlice(int lo, int hi);  // set X's width to [lo..hi], extracting that segment
     void pushSlice(int lo, int hi);   // ENTER on a selection: slice → Y, X unchanged (keeps its width)
 

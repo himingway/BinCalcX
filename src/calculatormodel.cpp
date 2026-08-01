@@ -36,6 +36,15 @@ QString formatValue(quint64 u, qint64 signedValue,
     return {};
 }
 
+/// Reinterpret a quint64 bit pattern as the equivalent qint64 two's-complement
+/// value. A plain static_cast is implementation-defined for patterns ≥ 2^63;
+/// this arithmetic form is fully defined in C++17.
+qint64 twoComplement(quint64 u)
+{
+    return (u < (1ULL << 63)) ? static_cast<qint64>(u)
+                              : -static_cast<qint64>(~u) - 1;
+}
+
 } // namespace
 
 CalculatorModel::CalculatorModel(QObject *parent)
@@ -222,7 +231,6 @@ bool CalculatorModel::loadFromText(const QString &raw)
         return false;
 
     // C-style base prefix overrides the active base; default to it otherwise.
-    // C-style base prefix overrides the active base; default to it otherwise.
     int radix = this->radix();
     if (s.size() >= 2 && s.at(0) == '0') {
         const QChar p = s.at(1).toLower();
@@ -244,7 +252,10 @@ bool CalculatorModel::loadFromText(const QString &raw)
     if (!ok)
         return false;
 
-    const quint64 finalv = negative ? static_cast<quint64>(-static_cast<qint64>(v)) : v;
+    // Negate in the unsigned domain: `-static_cast<qint64>(v)` is UB for
+    // v ≥ 2^63 (the INT64_MIN pattern), and unsigned wraparound is exactly the
+    // two's-complement result the mask below then narrows to the width.
+    const quint64 finalv = negative ? (0ULL - v) : v;
     stack_[0].value = normalize(static_cast<qint64>(finalv), stack_[0].width);
     buffer_ = QStringLiteral("0");
     entering_ = false;
@@ -281,8 +292,12 @@ void CalculatorModel::clearAll()
 
 void CalculatorModel::negate()
 {
-    // two's complement within X's width
-    stack_[0].value = normalize(-stack_[0].value, stack_[0].width);
+    // Two's complement within X's width. Negate in the unsigned domain —
+    // `-stack_[0].value` is UB when the pattern is INT64_MIN (0x8000..0),
+    // which in two's complement negates to itself; unsigned wraparound gives
+    // exactly the right bit pattern, and normalize() masks it to the width.
+    const quint64 v = static_cast<quint64>(stack_[0].value);
+    stack_[0].value = normalize(static_cast<qint64>(0ULL - v), stack_[0].width);
     entering_ = false;
     liftOnNext_ = false;
     refresh();
@@ -441,8 +456,12 @@ void CalculatorModel::replicate()
     const int w = stack_[0].width;
     const quint64 xv = static_cast<quint64>(stack_[0].value) & mask(w);
     const quint64 N = static_cast<quint64>(stack_[1].value);
+    if (N == 0)
+        return;   // {0{X}} — empty replication is invalid; leave the stack untouched
     const quint64 total = N * static_cast<quint64>(w);
-    const int rw = (total >= 64) ? 64 : static_cast<int>(total);
+    // total == 0 with N > 0 means N*w wrapped 2^64 (an astronomically large N) —
+    // cap at 64 like any other overflow.
+    const int rw = (total >= 64 || total == 0) ? 64 : static_cast<int>(total);
     quint64 rv = 0;
     if (w > 0) {
         for (quint64 i = 0; i < N; ++i) {
@@ -576,8 +595,10 @@ qint64 CalculatorModel::signedWithinWidth(quint64 v, int width) const
 {
     const quint64 m = v & mask(width);
     if (width > 0 && width < 64 && ((m >> (width - 1)) & 1ULL))
-        return static_cast<qint64>(m) - static_cast<qint64>(1ULL << width);
-    return static_cast<qint64>(m);
+        // m − 2^width, computed without signed overflow: (2^width − m) is
+        // ≤ 2^(width−1), so it fits a qint64 before the negation.
+        return -static_cast<qint64>((1ULL << width) - m);
+    return twoComplement(m);
 }
 
 QString CalculatorModel::verilogLiteral(const Reg &r, Base base, bool isSigned)
@@ -596,9 +617,9 @@ QString CalculatorModel::verilogLiteral(const Reg &r, Base base, bool isSigned)
     case Base::Hexadecimal:
         return QStringLiteral("%1'h%2").arg(w).arg(QString::number(u, 16).toUpper());
     case Base::Decimal: {
-        qint64 s = static_cast<qint64>(u);
+        qint64 s = twoComplement(u);
         if (isSigned && w < 64 && ((u >> (w - 1)) & 1ULL))
-            s = static_cast<qint64>(u) - static_cast<qint64>(1ULL << w);
+            s = -static_cast<qint64>((1ULL << w) - u);   // sign-extend to w bits
         if (isSigned)
             return QStringLiteral("%1'sd%2").arg(w).arg(QString::number(s));   // e.g. 8'sd-1
         return QStringLiteral("%1'd%2").arg(w).arg(QString::number(u));        // e.g. 8'd255

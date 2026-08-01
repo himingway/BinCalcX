@@ -26,6 +26,7 @@ moc_predefs.h
 Makefile
 Makefile.Debug
 Makefile.Release
+.qmake.stash
 *.pro.user
 *.pro.user.*
 

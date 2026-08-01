@@ -16,7 +16,8 @@ SOURCES += \
 HEADERS += \
     src/calculatormodel.h \
     src/calculatorview.h \
-    src/calculatorcontroller.h
+    src/calculatorcontroller.h \
+    src/version.h
 
 # App icon — runtime window icon (Qt resource) on every platform, plus the
 # Windows .exe icon via assets/app.rc (resolved relative to this in-tree build).

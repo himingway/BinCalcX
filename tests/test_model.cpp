@@ -9,6 +9,14 @@ static void check(bool ok, const char *what, long long got, long long want)
     else      std::printf("ok    %-34s = %lld\n", what, got);
 }
 
+// String variant — prints the actual strings so a failure shows the mismatch.
+static void checkStr(bool ok, const char *what, const QString &got, const char *want)
+{
+    if (!ok) { ++failures; std::printf("FAIL  %-34s got=%s want=%s\n", what,
+                                       got.toUtf8().constData(), want); }
+    else      std::printf("ok    %-34s = %s\n", what, got.toUtf8().constData());
+}
+
 int main()
 {
     CalculatorModel m;
@@ -408,6 +416,29 @@ int main()
     check((long long)m.xRegister() == 0, "BIN rejects digit '5'", (long long)m.xRegister(), 0);
     m.inputDigit("1");
     check((long long)m.xRegister() == 1, "BIN accepts digit '1'", (long long)m.xRegister(), 1);
+
+    // --- regressions: 0o prefix, empty replication, signed-overflow round-trips ---
+    m.setBitWidth(64); m.setBase(CalculatorModel::Base::Decimal);
+    { const bool ok = m.loadFromText("0o17"); const long long g = (long long)m.xRegister();
+      check(ok && g == 15, "paste 0o17 -> 15", g, 15); }
+
+    // {0{X}} — empty replication is invalid: X must be left untouched
+    m.clearAll(); m.loadFromText("0"); m.enter();        // Y = 0 (N)
+    m.loadFromText("0b101"); m.applySlice(0, 2);         // X = 3'b101
+    m.replicate();
+    check((long long)m.xRegister() == 5, "{0{101}} leaves X", (long long)m.xRegister(), 5);
+    check((long long)m.bitWidth() == 3, "{0{101}} keeps width 3", (long long)m.bitWidth(), 3);
+
+    // NEG of INT64_MIN (0x8000..0) round-trips (was UB on the signed negation)
+    m.setBitWidth(64); m.clearAll(); m.loadFromText("0x8000000000000000");
+    m.negate();
+    check((unsigned long long)m.xRegister() == 0x8000000000000000ull,
+          "NEG INT64_MIN round-trips", 0, 0);
+    // ... and its signed display is the full-width negative
+    m.setSignedMode(true);
+    checkStr(m.decimalString() == QStringLiteral("-9223372036854775808"),
+             "signed view of 0x8000..0", m.decimalString(), "-9223372036854775808");
+    m.setSignedMode(false);
 
     std::printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);
     return failures ? 1 : 0;

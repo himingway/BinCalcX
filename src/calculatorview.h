@@ -11,8 +11,9 @@ class QButtonGroup;
 class QCheckBox;
 class QGridLayout;
 class QLabel;
-class QTimer;
 class QShowEvent;
+class QStackedWidget;
+class QTimer;
 class QToolButton;
 
 /**
@@ -51,6 +52,7 @@ public:
     QString binaryText() const;
     void setCharText(const QString &text);
     void setStackValues(const std::array<QString, 4> &values);
+    void setStackTooltips(const std::array<QString, 4> &tips);
     // X read as a byte count → human-readable binary size (KiB/MiB/GiB…).
     QString sizeText() const;
     void setXField(const QString &text);          // override the X register (slice preview)
@@ -60,6 +62,7 @@ public:
     void setActiveWidth(int width);                  // grey-out cells >= width
     void setTheme(bool dark);
     void setStayOnTop(bool on);
+    void setHistoryEnabled(bool canUndo, bool canRedo);
     void setStatusMessage(const QString &msg);   // brief transient line (paste, …)
 
 signals:
@@ -70,12 +73,18 @@ signals:
     void signedModeChanged(bool enabled);
     void bitToggled(int bit);
     void bitWidthRequested(int width);
+    void customBitWidthRequested(int width);
     void shiftRequested(bool left);   // ◀ (left=true) shifts X<<1, ▶ shifts X>>1
     void themeToggled(bool dark);
     void stayOnTopToggled(bool on);
     void pasteRequested(const QString &text);    // clipboard text → Model
     void sliceApplyRequested(int lo, int hi);    // "Set Width from slice" → Model
     void slicePushRequested(int lo, int hi);     // ENTER on a slice → push to Y, X unchanged
+    void sliceSetRequested(int lo, int hi);      // set selected bits to 1
+    void sliceClearRequested(int lo, int hi);    // clear selected bits to 0
+    void sliceInvertRequested(int lo, int hi);   // invert selected bits
+    void sliceMaskRequested(int lo, int hi);     // replace X with bitmask for [lo..hi]
+    void stackRecallRequested(int index);        // copy T/Z/Y (index 3/2/1) to X
     void selectionChanged(int lo, int hi);       // -1,-1 when cleared → live X preview
 
 protected:
@@ -100,7 +109,12 @@ private:
     QCheckBox    *stayOnTopCheckbox_= nullptr;
     QPushButton  *shiftLeftBtn_     = nullptr;   // ◀  X << 1
     QPushButton  *shiftRightBtn_    = nullptr;   // ▶  X >> 1
+    QPushButton  *enterBtn_         = nullptr;
     QToolButton  *themeBtn_         = nullptr;
+    QToolButton  *undoBtn_          = nullptr;
+    QToolButton  *redoBtn_          = nullptr;
+    QToolButton  *widthMenuBtn_     = nullptr;
+    QToolButton  *helpBtn_          = nullptr;
     QButtonGroup *widthGroup_       = nullptr;
     // Index: [0]=8  [1]=16  [2]=32  [3]=64
     std::array<QToolButton *, 4>  widthBtns_{};
@@ -112,8 +126,11 @@ private:
     std::array<QPushButton *, 16> digitBtns_{};
 
     std::array<QPushButton *, 64> bitButtons_{};
-    QWidget *gridPanel_ = nullptr;   // bit-cell container; hit-tested for marquee select
-    QLabel *statusLabel_ = nullptr;
+    QWidget        *gridPanel_       = nullptr;   // bit-cell container; hit-tested for marquee select
+    QStackedWidget *gridHeaderStack_ = nullptr;   // swaps bit stats <-> slice action bar
+    QLabel         *bitStatsLabel_   = nullptr;   // Pop / MSB / LSB readout
+    QLabel         *selTagLabel_     = nullptr;   // [hi:lo] label inside selection bar
+    QLabel         *statusLabel_     = nullptr;
 
     bool    dark_         = true;
     QString accent_;        // current base-dependent accent colour
@@ -136,26 +153,30 @@ private:
     bool    firstShow_    = true;                    // re-apply theme once realised
 
     void buildLayout();
-    void copyActiveValue();       // Ctrl+C → clipboard, current base
+    void copyTextWithFeedback(const QString &text, const QString &label = QString());
+    void copyActiveValue(bool withPrefix = false);   // Ctrl+C / Ctrl+Shift+C
     void renderCharDisplay();     // turn charText_ into dimmed-placeholder HTML
     void renderSizeDisplay();     // X → human-readable byte size (binary/IEC units)
+    void updateBitStats();        // refresh Pop / MSB / LSB summary in grid header
+    void updateSelectionControls(); // sync grid header bar + ENTER label to selection
+    void showWidthMenu();         // preset + custom bit-width picker (1..64)
+    void showShortcutsDialog();   // keyboard reference cheat-sheet
+    void showFieldContextMenu(QWidget *target, const QPoint &pos);
     void applyTheme(bool dark, const QString &accent);
     static QString accentForBase(const QString &baseToken, bool dark = true);
 
     QPushButton *makeDigit(const QString &text);
-    QPushButton *makeOp(const QString &label, const QString &opToken);
+    QPushButton *makeOp(const QString &label, const QString &opToken,
+                        const QString &tip = QString());
     QPushButton *makeCommand(const QString &label, const QString &cmdToken,
-                             const char *objectName = nullptr);
+                             const char *objectName = nullptr,
+                             const QString &tip = QString());
     QPushButton *makeBaseButton(const QString &label, const QString &token);
     QPushButton *makeShiftButton(const QString &glyph, bool left);
     QToolButton *makeWidthButton(const QString &label, int width);
+    QToolButton *makeSliceActionBtn(const QString &label, const QString &tip);
     void applyDigitEnables(const QString &baseToken);
     static int baseIndex(const QString &token);  // "BIN"→0 "OCT"→1 "DEC"→2 "HEX"→3
-    // Is this hex digit char a legal digit for the given base? Mirrors
-    // CalculatorModel::isValidDigit so the keyboard layer can intercept an
-    // out-of-base key (e.g. '2'…'9', 'A'…'F' while BIN is active) before it
-    // ever reaches the Model — matching the on-screen keypad, which disables
-    // those same buttons via applyDigitEnables().
     static bool isDigitValidForBase(QChar c, const QString &baseToken);
     // marquee bit-range selection + keyboard-focus helpers
     void extendBitSelection(int curBit);   // grow selection to [anchor..cur]
@@ -163,8 +184,12 @@ private:
     bool commitSelectionIfAny();           // push the previewed slice → Y (X unchanged); false if none
     void repaintBitCells();                // apply [bitsel] (selection) + [kfocus] (ring)
     void moveBitFocus(int delta);          // ±1 (←/→) or ±16 (↑/↓), wrapped mod 64
+    void extendKeyboardSelection(int delta); // Shift+Arrows marquee select
+    void showBitFocusStatus();             // status line for focused bit
     void showSelectionStatus();            // status line: "Bits hi..lo = …"
     quint64 segmentValue() const;          // raw value of [selLo_..selHi_]; 0 if none
-    QString segmentValueText() const;      // segmentValue() formatted for the active base
+    QString segmentValueText(bool withPrefix = false) const;
+    QString segmentVerilogLiteral() const;
+    static QString bareDisplayText(QString text, const QString &baseToken);
     QPushButton *bitButtonAt(const QPoint &globalPos) const;   // cell under cursor
 };

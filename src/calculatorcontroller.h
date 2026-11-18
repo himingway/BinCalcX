@@ -31,6 +31,7 @@ private slots:
     void onSignedMode(bool enabled);
     void onBitToggled(int bit);
     void onBitWidthRequested(int width);
+    void onCustomBitWidthRequested(int width);
     void onBitWidthChanged(int width);
     void onShift(bool left);
     void onTheme(bool dark);

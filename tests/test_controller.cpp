@@ -163,6 +163,36 @@ private slots:
         QCOMPARE(QSettings().value("calc/bitWidth", -1).toInt(), 64);
     }
 
+    // ── BIN base selection via F8 / View signal (regression for toBase("BIN")) ─
+    void binBaseSelectionEndToEnd()
+    {
+        sendKey(Qt::Key_F8);
+        QCOMPARE(model->currentBase(), CalculatorModel::Base::Binary);
+        sendChar('1'); sendChar('0'); sendChar('1');
+        QCOMPARE((qint64)model->xRegister(), 5);
+    }
+
+    // ── Undo / Redo end-to-end via Ctrl+Z / Ctrl+Y ───────────────────────────
+    void undoRedoEndToEnd()
+    {
+        sendChar('9'); sendKey(Qt::Key_Return);
+        sendChar('4'); sendKey(Qt::Key_Plus);
+        QCOMPARE((qint64)model->xRegister(), 13);
+        sendCtrlKey(Qt::Key_Z);
+        QCOMPARE((qint64)model->xRegister(), 4);
+        sendCtrlKey(Qt::Key_Y);
+        QCOMPARE((qint64)model->xRegister(), 13);
+    }
+
+    // ── Verilog literal paste via Ctrl+V updates value AND bit width ─────────
+    void pasteVerilogLiteralEndToEnd()
+    {
+        QGuiApplication::clipboard()->setText("12'h0A5");
+        sendCtrlKey(Qt::Key_V);
+        QCOMPARE((qint64)model->xRegister(), 0xA5);
+        QCOMPARE(model->bitWidth(), 12);
+    }
+
 private:
     CalculatorModel *model = nullptr;
     CalculatorView *view = nullptr;

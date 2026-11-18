@@ -440,6 +440,76 @@ int main()
              "signed view of 0x8000..0", m.decimalString(), "-9223372036854775808");
     m.setSignedMode(false);
 
+    // --- new ops: ROL, ROR, ASR, BSWAP, BITREV, MASK ---
+    m.setBitWidth(8); m.setBase(CalculatorModel::Base::Hexadecimal); m.clearAll();
+    m.loadFromText("0x81"); m.enter(); m.loadFromText("1");
+    m.applyBinaryOp(CalculatorModel::Op::Rol);
+    check((long long)m.xRegister() == 0x03, "8-bit: 0x81 ROL 1 -> 0x03", (long long)m.xRegister(), 0x03);
+
+    m.clearAll(); m.loadFromText("0x81"); m.enter(); m.loadFromText("1");
+    m.applyBinaryOp(CalculatorModel::Op::Ror);
+    check((long long)m.xRegister() == 0xC0, "8-bit: 0x81 ROR 1 -> 0xC0", (long long)m.xRegister(), 0xC0);
+
+    m.clearAll(); m.loadFromText("0x80"); m.enter(); m.loadFromText("2");
+    m.applyBinaryOp(CalculatorModel::Op::Asr);
+    check((long long)m.xRegister() == 0xE0, "8-bit: 0x80 ASR 2 -> 0xE0", (long long)m.xRegister(), 0xE0);
+
+    m.clearAll(); m.loadFromText("0x80"); m.enter(); m.loadFromText("8");
+    m.applyBinaryOp(CalculatorModel::Op::Asr);
+    check((long long)m.xRegister() == 0xFF, "8-bit: 0x80 ASR 8 -> 0xFF", (long long)m.xRegister(), 0xFF);
+
+    m.setBitWidth(32); m.clearAll(); m.loadFromText("0x12345678");
+    m.byteSwap();
+    check((long long)m.xRegister() == 0x78563412, "32-bit BSWAP 0x12345678", (long long)m.xRegister(), 0x78563412);
+
+    m.setBitWidth(8); m.clearAll(); m.loadFromText("0b10110000");
+    m.bitReverse();
+    check((long long)m.xRegister() == 0x0D, "8-bit BITREV 0b10110000 -> 0x0D", (long long)m.xRegister(), 0x0D);
+
+    m.clearAll(); m.loadFromText("5");
+    m.makeMask();
+    check((long long)m.xRegister() == 0x1F, "8-bit MASK(5) -> 0x1F", (long long)m.xRegister(), 0x1F);
+
+    // --- bit-range slice operations & custom width ---
+    m.setBitWidth(16); m.clearAll(); m.loadFromText("0x00FF");
+    m.setBitRange(8, 11);
+    check((long long)m.xRegister() == 0x0FFF, "setBitRange[8..11]", (long long)m.xRegister(), 0x0FFF);
+    m.clearBitRange(4, 7);
+    check((long long)m.xRegister() == 0x0F0F, "clearBitRange[4..7]", (long long)m.xRegister(), 0x0F0F);
+    m.invertBitRange(0, 15);
+    check((long long)m.xRegister() == 0xF0F0, "invertBitRange[0..15]", (long long)m.xRegister(), 0xF0F0);
+    m.maskBitRange(4, 7);
+    check((long long)m.xRegister() == 0x00F0, "maskBitRange[4..7] -> 0x00F0", (long long)m.xRegister(), 0x00F0);
+
+    m.setCustomBitWidth(5); m.clearAll(); m.loadFromText("0x05");
+    check(m.bitWidth() == 5, "custom bitWidth 5", m.bitWidth(), 5);
+    checkStr(m.hexadecimalString() == QStringLiteral("05"),
+             "5-bit hex zero-padded", m.hexadecimalString(), "05");
+
+    // --- SystemVerilog / Verilog literal paste ---
+    m.setBitWidth(64); m.setBase(CalculatorModel::Base::Decimal); m.clearAll();
+    { const bool ok = m.loadFromText("12'h0A5");
+      check(ok && m.xRegister() == 0x0A5 && m.bitWidth() == 12, "paste 12'h0A5 -> w12 0xA5", (long long)m.xRegister(), 0x0A5); }
+    { const bool ok = m.loadFromText("8'sd-1");
+      check(ok && m.xRegister() == 0xFF && m.bitWidth() == 8, "paste 8'sd-1 -> w8 0xFF", (long long)m.xRegister(), 0xFF); }
+    { const bool ok = m.loadFromText("32'b1111_0000");
+      check(ok && m.xRegister() == 0xF0 && m.bitWidth() == 32, "paste 32'b1111_0000 -> w32 0xF0", (long long)m.xRegister(), 0xF0); }
+    check(!m.loadFromText("0'hFF"), "paste 0'hFF rejected", 0, 0);
+    check(!m.loadFromText("bad'h1"), "paste bad'h1 rejected", 0, 0);
+
+    // --- Undo / Redo ---
+    m.setBitWidth(64); m.setBase(CalculatorModel::Base::Decimal); m.clearAll();
+    m.inputDigit("1"); m.inputDigit("0"); m.enter();
+    m.inputDigit("5"); m.applyBinaryOp(CalculatorModel::Op::Add);   // X = 15
+    check((long long)m.xRegister() == 15 && m.canUndo(), "before undo: X=15", (long long)m.xRegister(), 15);
+    m.undo();
+    check((long long)m.xRegister() == 5 && m.canRedo(), "after undo: X=5", (long long)m.xRegister(), 5);
+    m.redo();
+    check((long long)m.xRegister() == 15, "after redo: X=15", (long long)m.xRegister(), 15);
+    m.clearAll();
+    m.undo();
+    check((long long)m.xRegister() == 15, "undo restores across CLR", (long long)m.xRegister(), 15);
+
     std::printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);
     return failures ? 1 : 0;
 }

@@ -28,23 +28,27 @@ instant visual anchoring.
 ### Per-register bit width
 
 Each register on the RPN stack carries its **own bit width** (1–64). The global
-8/16/32/64 selector sets X's width; selecting a bit range on the grid also sets
-X's width to the slice size. All values are masked to their register's width,
-signed interpretation is relative to it, and shifts are clamped. This makes
-hardware idioms natural: extracting a field, concatenating buses of different
-widths, and bit-reducing wide values.
+`8/16/32/64` selector sets X's width; clicking `W` opens presets (`4, 8, 12, 16,
+24, 32, 48, 64`) or a custom width (`1–64`), and selecting a bit range on the
+grid lets you extract it as X's width. All values are masked to their
+register's width, signed interpretation is relative to it, and shifts are
+clamped. This makes hardware idioms natural: extracting a field, concatenating
+buses of different widths, and bit-reducing wide values.
 
 ### Textless bit grid
 
-A 4×16 cell grid with **no `0`/`1` text** inside. Unlit cells are subtle frames
-with alternating nibble shades so byte boundaries read instantly; lit cells fill
-with the active accent. Tiny grey nibble-axis labels (`63 59 55 51 …`) sit
-above each group.
+A 4×16 cell grid with **no `0`/`1` text** inside, grouped into nibbles and bytes
+with a 32-bit half break. Unlit cells are subtle frames with alternating nibble
+shades so byte boundaries read instantly; lit cells fill with the active accent.
+Tiny grey nibble-axis labels (`63 60`, `59 56`, …) sit above each group, and a
+live header shows **`Pop`**, **`MSB`**, and **`LSB`** bit statistics.
 
 - **Click** any cell to toggle that bit.
-- **Hover** shows `Bit: N | Mask: 0x…` in the status line.
-- **Marquee select** — drag across cells to select a bit range; the selected
-  segment's value appears in the status line as a SystemVerilog literal.
+- **Hover** shows `Bit N [B#:b#] | Dec: … | Hex: 0x…` in the status line.
+- **Marquee select** — drag across cells (or press **`Shift+Arrow`**) to select
+  a bit range; the header switches to inline **`Ext`**, **`1s`**, **`0s`**,
+  **`~`**, and **`Msk`** slice actions, while the status line and X register
+  preview the selected segment.
 - **Keyboard navigation** — arrow keys move a focus ring across the grid;
   **Space** toggles the focused bit.
 - Cells beyond the current register width are **greyed out** as a hardware-
@@ -75,12 +79,12 @@ subdued; Y sits in between.
 |---|---|
 | Arithmetic | `+` `-` `*` `/` `MOD` |
 | Bitwise | `AND` `OR` `XOR` `NOT` |
-| Shift (binary) | `SHL` `SHR` — shift Y by the X amount |
+| Shift & Rotate | `SHL` `SHR` `Rol` `Ror` `>>>` (arithmetic right shift) — operates on Y by X |
 | Shift (in-place) | `◀` `▶` — single-bit left/right shift on X (logical when unsigned, arithmetic when signed) |
-| Unary | `+/-` (two's complement within X's width) |
-| Stack | `ENTER` `Rv` (roll down) `X<>Y` (swap) `CLx` `CLR` |
-| Hardware | `{,}` — concatenate `{Y,X}` by register widths; `{N}` — replicate `{N{X}}`; slice — extract a bit range |
-| Clipboard | `Ctrl+C` copy (active base, or selected bit range); `Ctrl+V` paste (supports `0x`/`0b`/`0o` prefixes and separators) |
+| Unary | `+/-` (two's complement within X's width) `Bswap` (endian byte swap) `Mask` (`(1<<X)-1` or selected bits) |
+| Stack & History | `ENTER` `Rv` (roll down) `X<>Y` (swap) `CLx` `CLR` `Undo` (`Ctrl+Z`) `Redo` (`Ctrl+Y`) |
+| Hardware | `{,}` — concatenate `{Y,X}` by register widths; `{N}` — replicate `{N{X}}`; inline slice actions (`Ext`, `1s`, `0s`, `~`, `Msk`) |
+| Clipboard | `Ctrl+C` copy bare value (or selection); `Ctrl+Shift+C` copy prefixed (`0x`/`0b`/`0o`/SV); `Ctrl+V` paste (`0x`/`0b`/`0o`, separators, and Verilog literals like `12'hABC` or `8'sd-1`); right-click any field for quick copy/recall |
 
 ### Themes & layout
 
@@ -152,15 +156,18 @@ display):
 
 | Key | Action | Key | Action |
 |---|---|---|---|
-| `0`–`9`, `A`–`F` | digit (current base) | `Enter` | ENTER (or push selection) |
+| `0`–`9`, `A`–`F` | digit (current base) | `Enter` / `Shift+Enter` | ENTER / push slice, or extract slice to X |
 | `+` `-` `*` `/` `%` | arithmetic / mod | `Backspace` | backspace |
 | `&` `\|` `^` | AND / OR / XOR | `Esc` | cancel selection, or CLR |
 | `~` / `!` | NOT | `Delete` | CLx |
-| `<` / `(` | SHL | `R` | roll down |
-| `>` / `)` | SHR | `S` | swap X↔Y |
+| `<` / `(` | SHL | `R` / `S` | roll down / swap X↔Y |
+| `>` / `)` | SHR | `[` / `]` | in-place X<<1 / X>>1 |
 | `_` / `N` | negate | `Space` | toggle focused bit |
-| `Ctrl+C` | copy X or selection | `← ↑ ↓ →` | move bit-grid focus |
-| `Ctrl+V` | paste number → X | `Ctrl+T` | toggle stay-on-top |
+| `{` `,` / `}` | `{,}` concat / `{N}` replicate | `← ↑ ↓ →` / `Shift+Arrows` | move bit focus / select bit range |
+| `F5`–`F8` | HEX / DEC / OCT / BIN | `Ctrl+1`–`4` | width 8 / 16 / 32 / 64 |
+| `U` | toggle Signed view | `Ctrl+Z` / `Ctrl+Y` | Undo / Redo |
+| `Ctrl+C` / `Ctrl+Shift+C` | copy bare / prefixed | `Ctrl+V` | paste number or Verilog literal → X |
+| `Ctrl+T` | toggle stay-on-top | `F1` / `?` | shortcuts reference dialog |
 
 ## RPN examples
 

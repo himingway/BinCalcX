@@ -151,6 +151,22 @@ private slots:
         sendCtrlKeyTo(firstLineEdit(), Qt::Key_C);
         QCOMPARE(QGuiApplication::clipboard()->text(), QStringLiteral("DEADBEEF"));
     }
+    void copyPrefixedWithCtrlShiftC()
+    {
+        view->setActiveBase("HEX");
+        view->setHexText("0000 00FF");
+        QKeyEvent p(QEvent::KeyPress, Qt::Key_C, Qt::ControlModifier | Qt::ShiftModifier);
+        QKeyEvent r(QEvent::KeyRelease, Qt::Key_C, Qt::ControlModifier | Qt::ShiftModifier);
+        QCoreApplication::sendEvent(view.data(), &p);
+        QCoreApplication::sendEvent(view.data(), &r);
+        QCOMPARE(QGuiApplication::clipboard()->text(), QStringLiteral("0xFF"));
+
+        view->setActiveBase("BIN");
+        view->setBinaryText("0000 1010");
+        QCoreApplication::sendEvent(view.data(), &p);
+        QCoreApplication::sendEvent(view.data(), &r);
+        QCOMPARE(QGuiApplication::clipboard()->text(), QStringLiteral("0b1010"));
+    }
 
 private:
     QScopedPointer<CalculatorView> view;

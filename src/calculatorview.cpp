@@ -3,6 +3,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QClipboard>
+#include <QDialog>
 #include <QEvent>
 #include <QFont>
 #include <QFrame>
@@ -10,14 +11,17 @@
 #include <QGroupBox>
 #include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QInputDialog>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QShortcut>
 #include <QShowEvent>
 #include <QSignalBlocker>
 #include <QSpacerItem>
+#include <QStackedWidget>
 #include <QStyle>
 #include <QTimer>
 #include <QToolButton>
@@ -102,6 +106,8 @@ CalculatorView::CalculatorView(QWidget *parent)
     // Ctrl+C/Ctrl+V keep working when a read-only display field holds focus.
     for (QLineEdit *le : findChildren<QLineEdit *>())
         le->installEventFilter(this);
+    charDisplay_->installEventFilter(this);
+    sizeDisplay_->installEventFilter(this);
 }
 
 void CalculatorView::showEvent(QShowEvent *event)
@@ -123,9 +129,21 @@ void CalculatorView::showEvent(QShowEvent *event)
 // result-push API
 // ---------------------------------------------------------------------------
 
-void CalculatorView::setHexText(const QString &text)     { hexDisplay_->setText(text); }
-void CalculatorView::setOctalText(const QString &text)   { octDisplay_->setText(text); }
-void CalculatorView::setDecimalText(const QString &text) { decimalDisplay_->setText(text); }
+void CalculatorView::setHexText(const QString &text)
+{
+    hexDisplay_->setText(text);
+    hexDisplay_->setCursorPosition(0);
+}
+void CalculatorView::setOctalText(const QString &text)
+{
+    octDisplay_->setText(text);
+    octDisplay_->setCursorPosition(0);
+}
+void CalculatorView::setDecimalText(const QString &text)
+{
+    decimalDisplay_->setText(text);
+    decimalDisplay_->setCursorPosition(0);
+}
 void CalculatorView::setBinaryText(const QString &text) { binaryText_ = text; }
 
 QString CalculatorView::hexText() const     { return hexDisplay_->text(); }
@@ -154,6 +172,22 @@ void CalculatorView::renderCharDisplay()
             html += QString(ch).toHtmlEscaped();   // &, <, > are valid printable bytes
     }
     charDisplay_->setText(html);
+
+    // Rich hover breakdown for each byte (double-click or right-click to copy).
+    const quint64 x = lastBitValue_;
+    QStringList parts;
+    for (int b = 7; b >= 0; --b) {
+        const unsigned char byte = static_cast<unsigned char>((x >> (b * 8)) & 0xFFu);
+        const QChar ascii = (byte >= 0x20 && byte <= 0x7E) ? QChar(byte) : QLatin1Char('.');
+        if (byte != 0 || b * 8 < activeWidth_) {
+            parts << QStringLiteral("B%1: 0x%2 '%3'")
+                         .arg(b)
+                         .arg(byte, 2, 16, QLatin1Char('0')).toUpper()
+                         .arg(ascii);
+        }
+    }
+    charDisplay_->setToolTip(tr("8-byte ASCII (MSB to LSB) - double-click to copy\n%1")
+                                 .arg(parts.join(QStringLiteral("   "))));
 }
 
 // Base-1024 place-value breakdown of a positive byte count: each non-zero
@@ -175,6 +209,20 @@ static QString decomposeSize(quint64 v)
         out += QStringLiteral("%1 %2").arg(digit).arg(QString::fromLatin1(kUnits[u]));
     }
     return out;
+}
+
+static QString formatSiSize(quint64 v)
+{
+    static const char * const kSiUnits[] = {"B", "kB", "MB", "GB", "TB", "PB", "EB"};
+    if (v < 1000)
+        return QStringLiteral("%1 B").arg(v);
+    double val = static_cast<double>(v);
+    int idx = 0;
+    while (val >= 1000.0 && idx < 6) {
+        val /= 1000.0;
+        ++idx;
+    }
+    return QStringLiteral("%1 %2").arg(val, 0, 'f', val >= 100.0 ? 1 : 2).arg(QLatin1String(kSiUnits[idx]));
 }
 
 QString CalculatorView::sizeText() const
@@ -205,18 +253,32 @@ QString CalculatorView::sizeText() const
 
 void CalculatorView::renderSizeDisplay()
 {
-    sizeDisplay_->setText(sizeText());
+    const QString iec = sizeText();
+    sizeDisplay_->setText(iec);
+    sizeDisplay_->setToolTip(tr("IEC: %1  |  SI: %2  |  %3 bytes\nDouble-click to copy")
+                                 .arg(iec, formatSiSize(lastBitValue_), QString::number(lastBitValue_)));
 }
 
 void CalculatorView::setStackValues(const std::array<QString, 4> &values)
 {
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < 4; ++i) {
         stackDisplays_[i]->setText(values[i]);
+        stackDisplays_[i]->setCursorPosition(0);
+    }
+}
+
+void CalculatorView::setStackTooltips(const std::array<QString, 4> &tips)
+{
+    for (int i = 0; i < 4; ++i) {
+        if (stackDisplays_[i])
+            stackDisplays_[i]->setToolTip(tips[i]);
+    }
 }
 
 void CalculatorView::setXField(const QString &text)
 {
     stackDisplays_[3]->setText(text);   // X = bottom register
+    stackDisplays_[3]->setCursorPosition(0);
 }
 
 void CalculatorView::setSignedMode(bool enabled)
@@ -281,10 +343,12 @@ void CalculatorView::refreshBits(quint64 value)
         btn->style()->polish(btn);
     }
 
-    // The byte-size readout derives from the same X value as the bit grid, so it
-    // stays in lock-step — re-render here (the early-out above already guards the
-    // "no change" case, so this only runs when the value actually moved).
+    // The byte-size and bit-stats readouts derive from the same X value as
+    // the bit grid, so they stay in lock-step.
     renderSizeDisplay();
+    updateBitStats();
+    if (selLo_ >= 0)
+        showSelectionStatus();
 }
 
 void CalculatorView::setActiveWidth(int width)
@@ -295,16 +359,43 @@ void CalculatorView::setActiveWidth(int width)
     // concat / replicate) — for a non-standard width, no segment is checked.
     const int active = (width == 8) ? 0 : (width == 16) ? 1
                       : (width == 32) ? 2 : (width == 64) ? 3 : -1;
+    // An exclusive QButtonGroup refuses to uncheck its last checked button, so
+    // temporarily relax exclusivity when entering a non-standard width (4, 12…).
+    if (widthGroup_) widthGroup_->setExclusive(false);
     for (int i = 0; i < 4; ++i) {
         if (widthBtns_[i])
             widthBtns_[i]->setChecked(i == active);   // active == -1 → none checked
     }
+    if (widthGroup_) widthGroup_->setExclusive(active >= 0);
+    if (widthMenuBtn_) {
+        const bool isCustom = (active < 0);
+        widthMenuBtn_->setText(isCustom ? tr("W:%1").arg(width) : tr("W"));
+        widthMenuBtn_->setProperty("custom", isCustom ? "1" : "0");
+        widthMenuBtn_->style()->unpolish(widthMenuBtn_);
+        widthMenuBtn_->style()->polish(widthMenuBtn_);
+    }
+    // Keep any active marquee selection within the valid [0..width-1] range.
+    if (selLo_ >= 0 && selHi_ >= width) {
+        if (selLo_ >= width) {
+            clearBitSelection();
+        } else {
+            selHi_ = width - 1;
+            selCurBit_ = qMin(selCurBit_, selHi_);
+            selAnchorBit_ = qMin(selAnchorBit_, selHi_);
+            repaintBitCells();
+            updateSelectionControls();
+            showSelectionStatus();
+            emit selectionChanged(selLo_, selHi_);
+        }
+    }
+    updateBitStats();
 }
 
 void CalculatorView::setTheme(bool dark)
 {
     dark_ = dark;
-    applyTheme(dark, accent_);
+    accent_ = accentForBase(activeBase_, dark_);
+    applyTheme(dark_, accent_);
     QSignalBlocker b(themeBtn_);
     themeBtn_->setChecked(dark);
     themeBtn_->setText(dark ? tr("Dark") : tr("Light"));
@@ -321,11 +412,18 @@ void CalculatorView::setStayOnTop(bool on)
     setWindowFlag(Qt::WindowStaysOnTopHint, on);
 }
 
+void CalculatorView::setHistoryEnabled(bool canUndo, bool canRedo)
+{
+    if (undoBtn_) undoBtn_->setEnabled(canUndo);
+    if (redoBtn_) redoBtn_->setEnabled(canRedo);
+}
+
 void CalculatorView::onThemeButton(bool checked)
 {
     dark_ = checked;
     themeBtn_->setText(checked ? tr("Dark") : tr("Light"));
-    applyTheme(checked, accent_);
+    accent_ = accentForBase(activeBase_, dark_);
+    applyTheme(dark_, accent_);
     emit themeToggled(checked);
 }
 
@@ -345,8 +443,12 @@ bool CalculatorView::eventFilter(QObject *watched, QEvent *event)
         if (t == QEvent::Enter) {
             if (selLo_ < 0) {
                 const quint64 place = 1ULL << bit;   // this bit's place value
-                statusLabel_->setText(tr("Bit %1 | Dec: %2 | Hex: 0x%3")
+                const QString inactive = (bit >= activeWidth_) ? tr(" (inactive)") : QString();
+                statusLabel_->setText(tr("Bit %1 [B%2:b%3]%4 | Dec: %5 | Hex: 0x%6")
                                       .arg(bit)
+                                      .arg(bit / 8)
+                                      .arg(bit % 8)
+                                      .arg(inactive)
                                       .arg(QString::number(place))
                                       .arg(QString::number(place, 16).toUpper()));
             }
@@ -403,15 +505,29 @@ bool CalculatorView::eventFilter(QObject *watched, QEvent *event)
             // Not consumed
         }
     }
-    // Clipboard shortcuts must fire on the View regardless of which child holds
-    // focus. A read-only QLineEdit otherwise swallows Ctrl+V (paste silently
-    // dropped — the "0xffff won't paste" bug) and on Ctrl+C copies its own raw
-    // grouped display text instead of the clean active-base value. Route both
-    // to the same handlers the top-level keyPressEvent uses.
+    // Quick double-click copy on CHR and SIZE readouts.
+    if ((watched == charDisplay_ || watched == sizeDisplay_) &&
+        event->type() == QEvent::MouseButtonDblClick) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (me->button() == Qt::LeftButton) {
+            if (watched == charDisplay_)
+                copyTextWithFeedback(charText_, QStringLiteral("CHR"));
+            else
+                copyTextWithFeedback(sizeText(), QStringLiteral("SIZE"));
+            return true;
+        }
+    }
+    // Clipboard & keyboard forwarding when a display field holds focus.
     if (event->type() == QEvent::KeyPress) {
         auto *ke = static_cast<QKeyEvent *>(event);
+        if ((ke->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier)) ==
+                (Qt::ControlModifier | Qt::ShiftModifier) &&
+            ke->key() == Qt::Key_C) {
+            copyActiveValue(true);
+            return true;
+        }
         if (ke->matches(QKeySequence::Copy)) {
-            copyActiveValue();
+            copyActiveValue(false);
             return true;
         }
         if (ke->matches(QKeySequence::Paste)) {
@@ -452,9 +568,18 @@ bool CalculatorView::eventFilter(QObject *watched, QEvent *event)
 
 void CalculatorView::keyPressEvent(QKeyEvent *event)
 {
-    // Clipboard: copy the active-base value / paste a number into X.
+    const Qt::KeyboardModifiers mods = event->modifiers();
+    const int key = event->key();
+
+    // Clipboard & History shortcuts (checked before single-char digit dispatch).
+    if ((mods & (Qt::ControlModifier | Qt::ShiftModifier)) ==
+            (Qt::ControlModifier | Qt::ShiftModifier) &&
+        key == Qt::Key_C) {
+        copyActiveValue(true);
+        return;
+    }
     if (event->matches(QKeySequence::Copy)) {
-        copyActiveValue();
+        copyActiveValue(false);
         return;
     }
     if (event->matches(QKeySequence::Paste)) {
@@ -463,11 +588,21 @@ void CalculatorView::keyPressEvent(QKeyEvent *event)
             emit pasteRequested(clip);
         return;
     }
+    if (mods & Qt::ControlModifier) {
+        if (key == Qt::Key_Z) {
+            emit commandPressed((mods & Qt::ShiftModifier) ? QStringLiteral("REDO")
+                                                           : QStringLiteral("UNDO"));
+            return;
+        }
+        if (key == Qt::Key_Y) { emit commandPressed(QStringLiteral("REDO")); return; }
+        if (key == Qt::Key_1) { emit bitWidthRequested(8);  return; }
+        if (key == Qt::Key_2) { emit bitWidthRequested(16); return; }
+        if (key == Qt::Key_3) { emit bitWidthRequested(32); return; }
+        if (key == Qt::Key_4) { emit bitWidthRequested(64); return; }
+    }
 
     const QString text = event->text();
-    const int key = event->key();
-
-    if (!text.isEmpty()) {
+    if (!text.isEmpty() && !(mods & (Qt::ControlModifier | Qt::AltModifier))) {
         const QChar c = text.at(0).toUpper();
         const QString s(c);
         if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F')) {
@@ -488,15 +623,47 @@ void CalculatorView::keyPressEvent(QKeyEvent *event)
         if (c == 'R') { emit commandPressed("ROLL"); return; }
         if (c == 'S') { emit commandPressed("SWAP"); return; }
         if (c == 'N' || c == '_') { emit commandPressed("NEG"); return; }
+        if (c == 'U') { signedCheckbox_->toggle(); return; }
+        if (c == '[') { emit shiftRequested(true); return; }
+        if (c == ']') { emit shiftRequested(false); return; }
+        if (c == '{' || c == ',') {
+            if (selLo_ >= 0) {
+                emit sliceApplyRequested(selLo_, selHi_);
+                clearBitSelection();
+            }
+            emit commandPressed("CONCAT");
+            return;
+        }
+        if (c == '}') {
+            if (selLo_ >= 0) {
+                emit sliceApplyRequested(selLo_, selHi_);
+                clearBitSelection();
+            }
+            emit commandPressed("REPL");
+            return;
+        }
+        if (c == '?') { showShortcutsDialog(); return; }
     }
 
+    const bool shiftHeld = (mods & Qt::ShiftModifier) != 0;
     switch (key) {
-    // ── Bit-grid keyboard focus navigation (active while this view holds focus;
-    //    a HEX/DEC/OCT field keeps focus and handles its own keys, never here) ──
-    case Qt::Key_Left:  moveBitFocus(+1);  return;   // one bit toward MSB
-    case Qt::Key_Right: moveBitFocus(-1);  return;   // one bit toward LSB
-    case Qt::Key_Up:    moveBitFocus(+16); return;   // up one row
-    case Qt::Key_Down:  moveBitFocus(-16); return;   // down one row
+    // ── Bit-grid keyboard focus navigation (Shift+Arrows extend selection) ──
+    case Qt::Key_Left:
+        if (shiftHeld) extendKeyboardSelection(+1);
+        else           moveBitFocus(+1);
+        return;
+    case Qt::Key_Right:
+        if (shiftHeld) extendKeyboardSelection(-1);
+        else           moveBitFocus(-1);
+        return;
+    case Qt::Key_Up:
+        if (shiftHeld) extendKeyboardSelection(+16);
+        else           moveBitFocus(+16);
+        return;
+    case Qt::Key_Down:
+        if (shiftHeld) extendKeyboardSelection(-16);
+        else           moveBitFocus(-16);
+        return;
     case Qt::Key_Space: emit bitToggled(focusBit_); return;   // toggle the focused bit
     case Qt::Key_Plus:      emit binaryOpPressed("ADD"); return;
     case Qt::Key_Minus:     emit binaryOpPressed("SUB"); return;
@@ -505,9 +672,12 @@ void CalculatorView::keyPressEvent(QKeyEvent *event)
     case Qt::Key_Percent:   emit binaryOpPressed("MOD"); return;
     case Qt::Key_Return:
     case Qt::Key_Enter:
-        // A selected slice is pushed to Y (X keeps its width); else normal lift.
-        if (!commitSelectionIfAny())
+        if (shiftHeld && selLo_ >= 0) {
+            emit sliceApplyRequested(selLo_, selHi_);
+            clearBitSelection();
+        } else if (!commitSelectionIfAny()) {
             emit commandPressed("ENTER");
+        }
         return;
     case Qt::Key_Backspace: emit commandPressed("BSP"); return;
     case Qt::Key_Escape:
@@ -516,44 +686,60 @@ void CalculatorView::keyPressEvent(QKeyEvent *event)
         if (selLo_ >= 0) { clearBitSelection(); return; }
         emit commandPressed("CLR"); return;
     case Qt::Key_Delete:    emit commandPressed("CLX"); return;
+    case Qt::Key_F1:        showShortcutsDialog(); return;
+    case Qt::Key_F5:        emit baseSelected(QStringLiteral("HEX")); return;
+    case Qt::Key_F6:        emit baseSelected(QStringLiteral("DEC")); return;
+    case Qt::Key_F7:        emit baseSelected(QStringLiteral("OCT")); return;
+    case Qt::Key_F8:        emit baseSelected(QStringLiteral("BIN")); return;
     default: break;
     }
     QWidget::keyPressEvent(event);
 }
 
-void CalculatorView::copyActiveValue()
+QString CalculatorView::bareDisplayText(QString text, const QString &baseToken)
 {
-    // If a bit range is selected, copy just that segment's value (in the active
-    // base). Otherwise copy the whole active-base value. Either way the text is
-    // clean (no grouping separators) so it pastes straight into code; BIN has no
-    // text field, so the full value comes from the stored binary string.
-    QString text;
+    text.remove(QLatin1Char(' '));
+    // HEX/BIN render width-padded with leading zeros (e.g. "0000…1234"); strip
+    // them so the copied value is bare — keep one digit for zero. DEC untouched.
+    if (baseToken != QLatin1String("DEC")) {
+        int cut = 0;
+        while (cut < text.size() - 1 && text.at(cut) == QLatin1Char('0'))
+            ++cut;
+        text = text.mid(cut);
+    }
+    return text;
+}
+
+void CalculatorView::copyTextWithFeedback(const QString &text, const QString &label)
+{
+    QGuiApplication::clipboard()->setText(text);
+    setStatusMessage(label.isEmpty() ? tr("Copied: %1").arg(text)
+                                     : tr("Copied %1: %2").arg(label, text));
+}
+
+void CalculatorView::copyActiveValue(bool withPrefix)
+{
     if (selLo_ >= 0) {
-        text = segmentValueText();
+        const QString text = withPrefix ? segmentVerilogLiteral() : segmentValueText(false);
         QGuiApplication::clipboard()->setText(text);
         setStatusMessage(tr("Copied bits %1..%2 = %3").arg(selHi_).arg(selLo_).arg(text));
         return;
     }
-    if (activeBase_ == "BIN") {
+    QString text;
+    if (activeBase_ == QLatin1String("BIN")) {
         text = binaryText_;
     } else {
         QLineEdit *fields[] = { nullptr, octDisplay_, decimalDisplay_, hexDisplay_ };
         QLineEdit *fld = fields[baseIndex(activeBase_)];
         text = fld ? fld->text() : decimalDisplay_->text();
     }
-    text.remove(' ');
-    // HEX/BIN render width-padded with leading zeros (e.g. "0000…1234"); strip
-    // them so the copied value is bare — OCT has none already, so this is a
-    // no-op there. Keep one digit so a value of 0 copies as "0", not "".
-    // DEC is untouched (no leading zeros, and may carry a leading '-').
-    if (activeBase_ != QLatin1String("DEC")) {
-        int cut = 0;
-        while (cut < text.size() - 1 && text.at(cut) == QLatin1Char('0'))
-            ++cut;
-        text = text.mid(cut);
+    text = bareDisplayText(text, activeBase_);
+    if (withPrefix) {
+        if (activeBase_ == QLatin1String("HEX"))      text.prepend(QStringLiteral("0x"));
+        else if (activeBase_ == QLatin1String("BIN")) text.prepend(QStringLiteral("0b"));
+        else if (activeBase_ == QLatin1String("OCT")) text.prepend(QStringLiteral("0o"));
     }
-    QGuiApplication::clipboard()->setText(text);
-    setStatusMessage(tr("Copied: %1").arg(text));
+    copyTextWithFeedback(text);
 }
 
 void CalculatorView::setStatusMessage(const QString &msg)
@@ -581,6 +767,7 @@ void CalculatorView::extendBitSelection(int curBit)
     selLo_ = qMin(selAnchorBit_, curBit);
     selHi_ = qMax(selAnchorBit_, curBit);
     repaintBitCells();
+    updateSelectionControls();
     showSelectionStatus();
     emit selectionChanged(selLo_, selHi_);   // live-preview the slice on the X register
 }
@@ -591,6 +778,7 @@ void CalculatorView::clearBitSelection()
     selLo_ = selHi_ = -1;
     selCurBit_ = selAnchorBit_ = -1;
     repaintBitCells();   // always repaint — keeps the focus ring current too
+    updateSelectionControls();
     if (had && !statusTimer_->isActive()) statusLabel_->clear();
     if (had) emit selectionChanged(-1, -1);   // restore the real X register display
 }
@@ -631,6 +819,34 @@ void CalculatorView::moveBitFocus(int delta)
     // rules exactly (Left +1, Right -1, Up +16, Down -16; 63↔0, row edges wrap).
     focusBit_ = ((focusBit_ + delta) % 64 + 64) % 64;
     repaintBitCells();
+    if (selLo_ < 0)
+        showBitFocusStatus();
+}
+
+void CalculatorView::extendKeyboardSelection(int delta)
+{
+    if (activeWidth_ <= 0) return;
+    const int maxBit = activeWidth_ - 1;
+    if (selLo_ < 0)
+        selAnchorBit_ = qBound(0, focusBit_, maxBit);
+    const int next = qBound(0, focusBit_ + delta, maxBit);
+    focusBit_ = next;
+    extendBitSelection(next);
+}
+
+void CalculatorView::showBitFocusStatus()
+{
+    if (!statusLabel_ || (statusTimer_ && statusTimer_->isActive()))
+        return;
+    const quint64 place = 1ULL << focusBit_;
+    const QString inactive = (focusBit_ >= activeWidth_) ? tr(" (inactive)") : QString();
+    statusLabel_->setText(tr("Bit %1 [B%2:b%3]%4 | Dec: %5 | Hex: 0x%6")
+                              .arg(focusBit_)
+                              .arg(focusBit_ / 8)
+                              .arg(focusBit_ % 8)
+                              .arg(inactive)
+                              .arg(QString::number(place))
+                              .arg(QString::number(place, 16).toUpper()));
 }
 
 void CalculatorView::showSelectionStatus()
@@ -639,11 +855,52 @@ void CalculatorView::showSelectionStatus()
     const int n = selHi_ - selLo_ + 1;
     const quint64 seg = segmentValue();
     const QString bin = QString::number(seg, 2).rightJustified(n, '0');
-    statusLabel_->setText(tr("Bits %1..%2  =  %3   0x%4   0b%5")
-                          .arg(selHi_).arg(selLo_)
+    statusLabel_->setText(tr("Bits %1..%2 (%3b) = %4   0x%5   0b%6")
+                          .arg(selHi_).arg(selLo_).arg(n)
                           .arg(QString::number(seg))
                           .arg(QString::number(seg, 16).toUpper())
                           .arg(bin));
+}
+
+void CalculatorView::updateBitStats()
+{
+    if (!bitStatsLabel_) return;
+    const quint64 mask = (activeWidth_ >= 64) ? ~quint64(0)
+                       : (activeWidth_ <= 0)  ? quint64(0)
+                                              : ((1ULL << activeWidth_) - 1);
+    const quint64 v = lastBitValue_ & mask;
+    int pop = 0;
+    int lsb = -1;
+    int msb = -1;
+    for (int i = 0; i < activeWidth_; ++i) {
+        if ((v >> i) & 1ULL) {
+            ++pop;
+            if (lsb < 0) lsb = i;
+            msb = i;
+        }
+    }
+    if (pop == 0)
+        bitStatsLabel_->setText(tr("Pop:0  MSB:-  LSB:-"));
+    else
+        bitStatsLabel_->setText(tr("Pop:%1  MSB:%2  LSB:%3").arg(pop).arg(msb).arg(lsb));
+}
+
+void CalculatorView::updateSelectionControls()
+{
+    const bool hasSel = (selLo_ >= 0);
+    if (gridHeaderStack_)
+        gridHeaderStack_->setCurrentIndex(hasSel ? 1 : 0);
+    if (selTagLabel_ && hasSel)
+        selTagLabel_->setText(QStringLiteral("[%1:%2]").arg(selHi_).arg(selLo_));
+    if (enterBtn_) {
+        if (hasSel)
+            enterBtn_->setText(tr("ENTER  %1  Push [%2:%3] %4 Y")
+                                   .arg(QChar(0x00B7))
+                                   .arg(selHi_).arg(selLo_)
+                                   .arg(QChar(0x2192)));
+        else
+            enterBtn_->setText(tr("ENTER"));
+    }
 }
 
 quint64 CalculatorView::segmentValue() const
@@ -655,16 +912,31 @@ quint64 CalculatorView::segmentValue() const
     return (lastBitValue_ >> selLo_) & mask;
 }
 
-QString CalculatorView::segmentValueText() const
+QString CalculatorView::segmentValueText(bool withPrefix) const
 {
     // The segment's value rendered in the active base — clean (no separators),
     // and for BIN padded to the selected width so every selected bit shows.
     const quint64 seg = segmentValue();
     if (selLo_ < 0) return QString();
-    if (activeBase_ == "HEX") return QString::number(seg, 16).toUpper();
-    if (activeBase_ == "OCT") return QString::number(seg, 8);
-    if (activeBase_ == "BIN") return QString::number(seg, 2).rightJustified(selHi_ - selLo_ + 1, '0');
+    if (activeBase_ == "HEX")
+        return (withPrefix ? QStringLiteral("0x") : QString()) + QString::number(seg, 16).toUpper();
+    if (activeBase_ == "OCT")
+        return (withPrefix ? QStringLiteral("0o") : QString()) + QString::number(seg, 8);
+    if (activeBase_ == "BIN")
+        return (withPrefix ? QStringLiteral("0b") : QString()) +
+               QString::number(seg, 2).rightJustified(selHi_ - selLo_ + 1, '0');
     return QString::number(seg);   // DEC
+}
+
+QString CalculatorView::segmentVerilogLiteral() const
+{
+    if (selLo_ < 0) return QString();
+    const int n = selHi_ - selLo_ + 1;
+    const quint64 seg = segmentValue();
+    if (activeBase_ == "HEX") return QStringLiteral("%1'h%2").arg(n).arg(QString::number(seg, 16).toUpper());
+    if (activeBase_ == "OCT") return QStringLiteral("%1'o%2").arg(n).arg(QString::number(seg, 8));
+    if (activeBase_ == "BIN") return QStringLiteral("%1'b%2").arg(n).arg(QString::number(seg, 2).rightJustified(n, '0'));
+    return QStringLiteral("%1'd%2").arg(n).arg(QString::number(seg));
 }
 
 // ---------------------------------------------------------------------------
@@ -685,14 +957,20 @@ void CalculatorView::applyTheme(bool dark, const QString &accent)
     // both themes and stays distinct from the base accent (lit bits) and the
     // selection border (keyFg).
     const QString focusRing = dark ? QStringLiteral("#22C55E") : QStringLiteral("#16A34A");
+    const QString disabledFg = dark ? QStringLiteral("#525866") : QStringLiteral("#9CA3AF");
 
     // Monospace font stack — used by every input field.
     const char *mono = "'JetBrains Mono','Cascadia Code','Fira Code','Consolas','Courier New',monospace";
 
-    // %1..%28 = palette, %29..%32 = toolbar*, %33 = accent, %34 = mono, %35 = grid border, %36 = focus ring.
+    // %1..%28 = palette, %29..%32 = toolbar*, %33 = accent, %34 = mono, %35 = grid border, %36 = focus ring, %37 = disabledFg.
     const QString css = QStringLiteral(
         /* ── Global ── */
         "QWidget { background: %1; color: %27; }"
+        "QToolTip { background: %2; color: %27; border: 1px solid %7; padding: 4px 6px; font-family: %34; }"
+        "QMenu { background: %2; color: %27; border: 1px solid %7; padding: 3px; }"
+        "QMenu::item { padding: 4px 16px; border-radius: 3px; }"
+        "QMenu::item:selected { background: %33; color: %16; }"
+        "QMenu::separator { height: 1px; background: %7; margin: 3px 6px; }"
         /* ── Input fields (all share mono + same border model) ── */
         "QLineEdit { background: %3; color: %4; border: 1px solid %7; border-radius: 3px;"
         "  padding: 2px 5px; font-family: %34;"
@@ -714,7 +992,7 @@ void CalculatorView::applyTheme(bool dark, const QString &accent)
         "QPushButton { background: %5; color: %8; border: 1px solid %7; border-radius: 3px; padding: 4px; }"
         "QPushButton:hover { background: %6; }"
         "QPushButton:pressed { background: %33; color: #FFFFFF; }"
-        "QPushButton:disabled { color: %28; background: %2; border-color: %2; }"
+        "QPushButton:disabled { color: %37; background: %24; border-color: %25; }"
         /* ── Operator keys ── */
         "QPushButton#op { background: %9; color: %10; border: 1px solid %7; }"
         "QPushButton#op:hover { background: %6; }"
@@ -725,17 +1003,20 @@ void CalculatorView::applyTheme(bool dark, const QString &accent)
         "QPushButton#enter { background: %13; color: %14; border: 1px solid %13; font-weight: bold; }"
         "QPushButton#enter:hover { background: %15; }"
         /* ── Base selector buttons ── */
-        "QPushButton#base { background: %5; color: %28; border: 1px solid %7; }"
+        "QPushButton#base { background: %5; color: %28; border: 1px solid %7; padding: 0px; }"
+        "QPushButton#base:hover { color: %8; background: %6; }"
         "QPushButton#base:checked { background: %33; color: %16; border: 1px solid %33; }"
-        /* ── ◀ ▶ in-place shift keys — flat, borderless; accent on hover ── */
-        "QPushButton#shiftBtn { background: transparent; border: none; color: %28; padding: 0; }"
-        "QPushButton#shiftBtn:hover { color: %33; }"
+        /* ── ◀ ▶ in-place shift keys ── */
+        "QPushButton#shiftBtn { background: transparent; border: 1px solid transparent; border-radius: 3px; color: %28; padding: 0; }"
+        "QPushButton#shiftBtn:hover { color: %33; background: %5; border-color: %7; }"
         "QPushButton#shiftBtn:pressed { color: %33; }"
         /* ── Bit cells ── */
         "QPushButton#bitOffA { background: %21; border: 1px solid %23; border-radius: 2px; }"
         "QPushButton#bitOffB { background: %22; border: 1px solid %23; border-radius: 2px; }"
         "QPushButton#bitOn { background: %33; border: 1px solid %33; border-radius: 2px; }"
         "QPushButton#bitDisabled { background: %24; border: 1px solid %25; border-radius: 2px; }"
+        "QPushButton#bitOffA:hover, QPushButton#bitOffB:hover { border: 1px solid %33; }"
+        "QPushButton#bitOn:hover { border: 1px solid %8; }"
         /* ── Bit cells in a marquee selection — contrast border over the value bg ── */
         "QPushButton#bitOffA[bitsel=\"1\"], QPushButton#bitOffB[bitsel=\"1\"],"
         "QPushButton#bitOn[bitsel=\"1\"], QPushButton#bitDisabled[bitsel=\"1\"]"
@@ -748,12 +1029,14 @@ void CalculatorView::applyTheme(bool dark, const QString &accent)
         /* ── Labels / check-boxes ── */
         "QLabel { color: %27; background: transparent; }"
         "QLabel#gridLabel { color: %26; }"
+        "QLabel#bitStats { color: %28; font-family: %34; }"
+        "QLabel#selTag { color: %33; font-weight: bold; font-family: %34; }"
         "QLabel#status { color: %28; }"
         "QCheckBox { color: %27; background: transparent; spacing: 5px; }"
         /* ── Group box ── */
         "QGroupBox { color: %28; border: 1px solid %7; border-radius: 4px; margin-top: 10px;"
         "  padding-top: 6px; font-weight: bold; background: %2; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
+        "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; background: %1; }"
         /* ── Toolbar — flat color-block, no border ── */
         "QWidget#toolbar { background: %29; border: none; border-radius: 0; color: %27; }"
         "QWidget#toolbar QLabel { color: %27; }"
@@ -767,9 +1050,21 @@ void CalculatorView::applyTheme(bool dark, const QString &accent)
         "QToolButton { background: %5; color: %8; border: 1px solid %7; border-radius: 3px; padding: 3px 7px; }"
         "QToolButton:hover { background: %6; }"
         "QToolButton:checked { background: %33; color: %16; border: 1px solid %33; }"
-        /* ── Top-bar theme toggle ── */
+        "QToolButton:disabled { color: %37; background: %24; border-color: %25; }"
+        /* ── Top-bar buttons ── */
         "QToolButton#topBarBtn { min-height: 20px; max-height: 20px; padding: 0px 6px;"
         "  color: %8; background: %5; border: 1px solid %7; }"
+        "QToolButton#topBarBtn:hover { background: %6; }"
+        "QToolButton#topBarBtn:disabled { color: %37; background: %29; border-color: %25; }"
+        /* ── Custom width selector button ── */
+        "QToolButton#widthMenuBtn { min-height: 20px; max-height: 20px; padding: 0px 6px;"
+        "  color: %27; background: transparent; border: 1px solid transparent; border-radius: 3px; font-weight: bold; }"
+        "QToolButton#widthMenuBtn:hover { background: %5; border-color: %7; }"
+        "QToolButton#widthMenuBtn[custom=\"1\"] { color: %33; background: %5; border-color: %33; }"
+        /* ── Inline slice action pills inside bit-grid header ── */
+        "QToolButton#sliceBarBtn { min-height: 18px; max-height: 18px; padding: 0px 5px;"
+        "  color: %8; background: %5; border: 1px solid %7; border-radius: 3px; }"
+        "QToolButton#sliceBarBtn:hover { background: %6; border-color: %33; }"
         /* ── Width segmented buttons (inside capsule) ── */
         "QToolButton#widthBtn { background: transparent; color: %32; border: none; border-radius: 4px;"
         "  min-height: 20px; max-height: 20px; padding: 0px 6px; }"
@@ -784,7 +1079,8 @@ void CalculatorView::applyTheme(bool dark, const QString &accent)
     .arg(A)                                                                                                    // 33
     .arg(mono)                                                                                                 // 34
     .arg(gridBorder)                                                                                          // 35
-    .arg(focusRing);                                                                                            // 36
+    .arg(focusRing)                                                                                            // 36
+    .arg(disabledFg);                                                                                          // 37
 
     setStyleSheet(css);
 
@@ -806,8 +1102,9 @@ void CalculatorView::applyTheme(bool dark, const QString &accent)
 // double-scales (logical already carries the scale) and bloats the layout on
 // high-DPI displays. main() sets PassThrough rounding so fractional factors are
 // honoured exactly.
-static constexpr int kBitCellPx = 16;   // logical px; tuned to the 9pt mono glyph
-static constexpr int kNibbleGapPx = 6;  // extra gap between 4-bit nibble groups
+static constexpr int kBitCellPx = 17;   // logical px; tuned to the 9pt mono glyph
+static constexpr int kNibbleGapPx = 5;  // extra gap between 4-bit nibble groups
+static constexpr int kByteGapPx = 12;   // wider break between 8-bit byte lanes
 
 // ---------------------------------------------------------------------------
 // layout
@@ -835,13 +1132,14 @@ void CalculatorView::buildLayout()
     QFont tf = title->font(); tf.setBold(true); tf.setPointSize(8); title->setFont(tf);
     tb->addWidget(title);
 
-    tb->addSpacing(12);
+    tb->addSpacing(10);
 
     // [Theme toggle] Dark / Light
     themeBtn_ = new QToolButton(toolbar);
     themeBtn_->setObjectName("topBarBtn");
     themeBtn_->setCheckable(true);
     themeBtn_->setChecked(dark_);
+    themeBtn_->setFocusPolicy(Qt::NoFocus);
     themeBtn_->setText(dark_ ? tr("Dark") : tr("Light"));
     themeBtn_->setToolTip(tr("Toggle dark / light theme"));
     connect(themeBtn_, &QToolButton::toggled, this, &CalculatorView::onThemeButton);
@@ -856,21 +1154,40 @@ void CalculatorView::buildLayout()
     tb->addWidget(sep);
     tb->addSpacing(8);
 
-    // [Base: BIN] — binary-entry toggle. Same #base chrome as the HEX/OCT/DEC
-    // selectors below (checkable, accent-filled when active), placed between the
-    // theme toggle and the W width group. Registers into baseBtns_[0], so it
-    // checks/unchecks in lock-step with the others via setActiveBase().
-    tb->addWidget(makeBaseButton(tr("BIN"), "BIN"));
-    tb->addSpacing(8);
+    // [History] Undo / Redo
+    undoBtn_ = new QToolButton(toolbar);
+    undoBtn_->setObjectName("topBarBtn");
+    undoBtn_->setFocusPolicy(Qt::NoFocus);
+    undoBtn_->setText(tr("Undo"));
+    undoBtn_->setEnabled(false);
+    undoBtn_->setToolTip(tr("Undo  (Ctrl+Z)"));
+    connect(undoBtn_, &QToolButton::clicked, this, [this]{ emit commandPressed(QStringLiteral("UNDO")); });
+    tb->addWidget(undoBtn_);
+    tb->addSpacing(3);
+
+    redoBtn_ = new QToolButton(toolbar);
+    redoBtn_->setObjectName("topBarBtn");
+    redoBtn_->setFocusPolicy(Qt::NoFocus);
+    redoBtn_->setText(tr("Redo"));
+    redoBtn_->setEnabled(false);
+    redoBtn_->setToolTip(tr("Redo  (Ctrl+Y)"));
+    connect(redoBtn_, &QToolButton::clicked, this, [this]{ emit commandPressed(QStringLiteral("REDO")); });
+    tb->addWidget(redoBtn_);
 
     // → push width group to the right
     tb->addStretch(1);
 
-    // [Width] label + segmented capsule
-    auto wLbl = new QLabel(tr("W"), toolbar);
-    QFont wf = wLbl->font(); wf.setBold(true); wf.setPointSize(8); wLbl->setFont(wf);
-    tb->addWidget(wLbl);
-    tb->addSpacing(6);
+    // [Width] clickable label/menu (presets + custom 1..64) + segmented capsule
+    widthMenuBtn_ = new QToolButton(toolbar);
+    widthMenuBtn_->setObjectName("widthMenuBtn");
+    widthMenuBtn_->setFocusPolicy(Qt::NoFocus);
+    widthMenuBtn_->setText(tr("W"));
+    widthMenuBtn_->setToolTip(tr("Bit width (click for presets / custom 1..64)"));
+    QFont wf = widthMenuBtn_->font(); wf.setBold(true); wf.setPointSize(8); widthMenuBtn_->setFont(wf);
+    widthMenuBtn_->setMinimumWidth(widthMenuBtn_->fontMetrics().horizontalAdvance(QStringLiteral("W:64")) + 14);
+    connect(widthMenuBtn_, &QToolButton::clicked, this, &CalculatorView::showWidthMenu);
+    tb->addWidget(widthMenuBtn_);
+    tb->addSpacing(4);
 
     // Segmented-control capsule
     auto capsule = new QFrame(toolbar);
@@ -888,7 +1205,7 @@ void CalculatorView::buildLayout()
     }
     tb->addWidget(capsule);
 
-    tb->addSpacing(16);
+    tb->addSpacing(12);
 
     // [Pin] stay-on-top — toggle via the toolbar checkbox or Ctrl+T.
     stayOnTopCheckbox_ = new QCheckBox(tr("Top"), toolbar);
@@ -908,6 +1225,16 @@ void CalculatorView::buildLayout()
         emit stayOnTopToggled(on);
     });
     tb->addWidget(stayOnTopCheckbox_);
+    tb->addSpacing(8);
+
+    // [Help] Keyboard shortcuts dialog
+    helpBtn_ = new QToolButton(toolbar);
+    helpBtn_->setObjectName("topBarBtn");
+    helpBtn_->setFocusPolicy(Qt::NoFocus);
+    helpBtn_->setText(tr("?"));
+    helpBtn_->setToolTip(tr("Keyboard shortcuts  (F1)"));
+    connect(helpBtn_, &QToolButton::clicked, this, &CalculatorView::showShortcutsDialog);
+    tb->addWidget(helpBtn_);
 
     auto pinShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_T), this);
     connect(pinShortcut, &QShortcut::activated, this, [this]{
@@ -922,15 +1249,87 @@ void CalculatorView::buildLayout()
     gridPanel_ = new QWidget(this);
     gridPanel_->setObjectName("gridPanel");
     gridPanel_->installEventFilter(this);   // empty-area clicks → deselect
-    auto grid = new QGridLayout(gridPanel_);
-    grid->setContentsMargins(6, 5, 6, 7);
+    auto gridBox = new QVBoxLayout(gridPanel_);
+    gridBox->setContentsMargins(6, 5, 6, 7);
+    gridBox->setSpacing(3);
+
+    // Header inside gridPanel_: [BIN] base selector + bit stats / slice action bar
+    auto gridHeader = new QHBoxLayout;
+    gridHeader->setContentsMargins(0, 0, 0, 0);
+    gridHeader->setSpacing(6);
+
+    auto binBtn = makeBaseButton(tr("BIN"), "BIN");
+    binBtn->setFixedSize(38, 20);
+    binBtn->setToolTip(tr("Binary input mode  (F8)"));
+    gridHeader->addWidget(binBtn);
+
+    gridHeaderStack_ = new QStackedWidget(gridPanel_);
+    gridHeaderStack_->setFixedHeight(20);
+
+    bitStatsLabel_ = new QLabel(tr("Pop:0  MSB:-  LSB:-"), gridHeaderStack_);
+    bitStatsLabel_->setObjectName("bitStats");
+    QFont bsf = bitStatsLabel_->font(); bsf.setPointSize(8); bitStatsLabel_->setFont(bsf);
+    bitStatsLabel_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    gridHeaderStack_->addWidget(bitStatsLabel_);
+
+    auto selBar = new QWidget(gridHeaderStack_);
+    auto selLay = new QHBoxLayout(selBar);
+    selLay->setContentsMargins(0, 0, 0, 0);
+    selLay->setSpacing(2);
+    selLay->addStretch(1);
+
+    selTagLabel_ = new QLabel(selBar);
+    selTagLabel_->setObjectName("selTag");
+    selTagLabel_->setFont(bsf);
+    selLay->addWidget(selTagLabel_);
+    selLay->addSpacing(3);
+
+    auto extBtn = makeSliceActionBtn(tr("Ext"), tr("Extract [hi:lo] into X and set width  (Shift+Enter)"));
+    connect(extBtn, &QToolButton::clicked, this, [this]{
+        if (selLo_ >= 0) {
+            emit sliceApplyRequested(selLo_, selHi_);
+            clearBitSelection();
+        }
+    });
+    auto set1Btn = makeSliceActionBtn(tr("1s"), tr("Set selected bits [hi:lo] to 1"));
+    connect(set1Btn, &QToolButton::clicked, this, [this]{
+        if (selLo_ >= 0) emit sliceSetRequested(selLo_, selHi_);
+    });
+    auto clr0Btn = makeSliceActionBtn(tr("0s"), tr("Clear selected bits [hi:lo] to 0"));
+    connect(clr0Btn, &QToolButton::clicked, this, [this]{
+        if (selLo_ >= 0) emit sliceClearRequested(selLo_, selHi_);
+    });
+    auto invBtn = makeSliceActionBtn(tr("~"), tr("Invert selected bits [hi:lo]"));
+    connect(invBtn, &QToolButton::clicked, this, [this]{
+        if (selLo_ >= 0) emit sliceInvertRequested(selLo_, selHi_);
+    });
+    auto mskBtn = makeSliceActionBtn(tr("Msk"), tr("Replace X with bitmask for [hi:lo]"));
+    connect(mskBtn, &QToolButton::clicked, this, [this]{
+        if (selLo_ >= 0) {
+            emit sliceMaskRequested(selLo_, selHi_);
+            clearBitSelection();
+        }
+    });
+    selLay->addWidget(extBtn);
+    selLay->addWidget(set1Btn);
+    selLay->addWidget(clr0Btn);
+    selLay->addWidget(invBtn);
+    selLay->addWidget(mskBtn);
+    gridHeaderStack_->addWidget(selBar);
+
+    gridHeader->addWidget(gridHeaderStack_, 1);
+    gridBox->addLayout(gridHeader);
+
+    auto grid = new QGridLayout;
+    grid->setContentsMargins(0, 0, 0, 0);
     grid->setHorizontalSpacing(2);
     grid->setVerticalSpacing(1);
 
     for (int row = 0; row < 4; ++row) {
         const int high = 63 - 16 * row;          // row's top bit
-        const int headerRow = row * 2;
-        const int dataRow   = row * 2 + 1;
+        const int rowOffset = (row >= 2) ? 1 : 0; // spacer row between 63..32 and 31..0
+        const int headerRow = row * 2 + rowOffset;
+        const int dataRow   = headerRow + 1;
 
         for (int g = 0; g < 4; ++g) {            // 4 nibbles per row
             const int nibHigh = high - g * 4;
@@ -965,24 +1364,24 @@ void CalculatorView::buildLayout()
                 bitButtons_[bit] = btn;
                 grid->addWidget(btn, dataRow, g * 5 + b);
             }
-            // Nibble-group gap: a fixed-width spacer in the boundary column
-            // (g*5+4) widens the break between 4-bit groups so each nibble
-            // reads as a unit. Omitted after the last nibble (g==3) — no gap
-            // is needed at a row's right edge.
+            // Nibble / Byte group gap: wider break at g==1 separates bytes.
             if (g < 3) {
-                grid->addItem(new QSpacerItem(kNibbleGapPx, 0,
+                const int gap = (g == 1) ? kByteGapPx : kNibbleGapPx;
+                grid->addItem(new QSpacerItem(gap, 0,
                                               QSizePolicy::Fixed, QSizePolicy::Minimum),
                               dataRow, g * 5 + 4);
             }
         }
     }
-    topHBox->addWidget(gridPanel_, 3);
+    grid->addItem(new QSpacerItem(0, 3, QSizePolicy::Minimum, QSizePolicy::Fixed), 4, 0);
+    gridBox->addLayout(grid);
+    topHBox->addWidget(gridPanel_);
 
     // RPN stack (right, expanded)
-    auto rpnGroup = new QGroupBox(tr("RPN  T Z Y X"), this);
+    auto rpnGroup = new QGroupBox(tr("RPN STACK"), this);
     auto rpnGrid = new QGridLayout(rpnGroup);
     rpnGrid->setContentsMargins(6, 12, 6, 6);
-    rpnGrid->setVerticalSpacing(3);
+    rpnGrid->setVerticalSpacing(4);
     rpnGrid->setColumnStretch(1, 1);
     const QString labels[4] = {tr("T"), tr("Z"), tr("Y"), tr("X")};
     const char *objName[4]  = {"stackZT", "stackZT", "stackY", "stackX"};
@@ -996,50 +1395,68 @@ void CalculatorView::buildLayout()
         stackDisplays_[i] = new QLineEdit(rpnGroup);
         stackDisplays_[i]->setReadOnly(true);
         stackDisplays_[i]->setObjectName(objName[i]);
+        stackDisplays_[i]->setContextMenuPolicy(Qt::CustomContextMenu);
+        stackDisplays_[i]->setProperty("stackRow", i);
+        connect(stackDisplays_[i], &QWidget::customContextMenuRequested, this,
+                [this, w = stackDisplays_[i]](const QPoint &pos){ showFieldContextMenu(w, pos); });
         if (i == 3) stackDisplays_[i]->setMinimumHeight(30);
         rpnGrid->addWidget(lbl, i, 0);
         rpnGrid->addWidget(stackDisplays_[i], i, 1);
     }
-    topHBox->addWidget(rpnGroup, 2);
+    const int minStackFieldW =
+        stackDisplays_[3]->fontMetrics().horizontalAdvance(QStringLiteral("64'd18446744073709551615")) + 22;
+    stackDisplays_[3]->setMinimumWidth(minStackFieldW);
+    topHBox->addWidget(rpnGroup, 1);
     root->addLayout(topHBox);
 
-    // --- base rows (short fields, 2 compact rows) ---
+    // --- base rows (short fields, 2 compact rows + SIZE) ---
     auto baseRows = new QVBoxLayout;
-    baseRows->setSpacing(2);
+    baseRows->setSpacing(3);
 
-    // Shared row height for the input fields, the ◀ ▶ shift keys and the base
-    // selectors — so the shift keys sit pixel-aligned with the fields.
     const int baseFieldH = fontMetrics().height() + 8;
 
     auto row1 = new QHBoxLayout;
     row1->setSpacing(4);
-    row1->addWidget(makeBaseButton(tr("HEX"), "HEX"));
+    auto hexBtn = makeBaseButton(tr("HEX"), "HEX");
+    hexBtn->setToolTip(tr("Hexadecimal input mode  (F5)"));
+    row1->addWidget(hexBtn);
     hexDisplay_ = new QLineEdit(this); hexDisplay_->setReadOnly(true);
     hexDisplay_->setFixedHeight(baseFieldH);
-    row1->addWidget(hexDisplay_, 2);
-    row1->addWidget(makeBaseButton(tr("OCT"), "OCT"));
+    hexDisplay_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(hexDisplay_, &QWidget::customContextMenuRequested, this,
+            [this](const QPoint &pos){ showFieldContextMenu(hexDisplay_, pos); });
+    row1->addWidget(hexDisplay_, 5);
+
+    auto octBtn = makeBaseButton(tr("OCT"), "OCT");
+    octBtn->setToolTip(tr("Octal input mode  (F7)"));
+    row1->addWidget(octBtn);
     octDisplay_ = new QLineEdit(this); octDisplay_->setReadOnly(true);
     octDisplay_->setFixedHeight(baseFieldH);
-    row1->addWidget(octDisplay_, 2);
+    octDisplay_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(octDisplay_, &QWidget::customContextMenuRequested, this,
+            [this](const QPoint &pos){ showFieldContextMenu(octDisplay_, pos); });
+    row1->addWidget(octDisplay_, 6);
     baseRows->addLayout(row1);
 
     //  [DEC] [DEC field] [✓ Signed] [◀] [▶] [CHR] [CHR field]
     auto row2 = new QHBoxLayout;
     row2->setSpacing(4);
-    row2->addWidget(makeBaseButton(tr("DEC"), "DEC"));
+    auto decBtn = makeBaseButton(tr("DEC"), "DEC");
+    decBtn->setToolTip(tr("Decimal input mode  (F6)"));
+    row2->addWidget(decBtn);
     decimalDisplay_ = new QLineEdit(this); decimalDisplay_->setReadOnly(true);
     decimalDisplay_->setFixedHeight(baseFieldH);
-    row2->addWidget(decimalDisplay_, 2);   // narrower than before — frees width for CHR
+    decimalDisplay_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(decimalDisplay_, &QWidget::customContextMenuRequested, this,
+            [this](const QPoint &pos){ showFieldContextMenu(decimalDisplay_, pos); });
+    row2->addWidget(decimalDisplay_, 2);
     signedCheckbox_ = new QCheckBox(tr("Signed"), this);
     signedCheckbox_->setChecked(false);
     signedCheckbox_->setFocusPolicy(Qt::NoFocus);
+    signedCheckbox_->setToolTip(tr("Toggle signed / two's-complement decimal view  (U)"));
     connect(signedCheckbox_, &QCheckBox::toggled, this, &CalculatorView::signedModeChanged);
     row2->addWidget(signedCheckbox_);
 
-    // ◀ ▶ — in-place single-bit shifts on X (distinct from the << >> binary ops,
-    // which shift Y by the X amount). Left = X<<1 (truncated), right = X>>1
-    // (logical, or arithmetic when Signed). Glyphs via code points (mirrors the
-    // existing QChar(0x00B7) usage) so the source stays pure-ASCII — MSVC-safe.
     shiftLeftBtn_  = makeShiftButton(QString(QChar(0x25C0)), true);   // ◀
     shiftRightBtn_ = makeShiftButton(QString(QChar(0x25B6)), false);  // ▶
     shiftLeftBtn_->setFixedHeight(baseFieldH);
@@ -1057,15 +1474,15 @@ void CalculatorView::buildLayout()
     charDisplay_->setAlignment(Qt::AlignCenter);
     charDisplay_->setTextInteractionFlags(Qt::NoTextInteraction);
     charDisplay_->setFixedHeight(baseFieldH);
-    // Wide enough to seat 8 monospace glyphs comfortably (e.g. "DEADBEEF").
+    charDisplay_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(charDisplay_, &QWidget::customContextMenuRequested, this,
+            [this](const QPoint &pos){ showFieldContextMenu(charDisplay_, pos); });
     const int chrW = charDisplay_->fontMetrics().horizontalAdvance(QStringLiteral("DEADBEEF")) + 20;
     charDisplay_->setFixedWidth(chrW);
     row2->addWidget(charDisplay_);
     baseRows->addLayout(row2);
 
     //  [SIZE] [X read as a byte count — human-readable binary units]
-    // A fifth "interpretation" of X (alongside HEX/OCT/DEC/CHR): the same value
-    // seen as a storage size. Binary (IEC) units, so 0x4000 = 16 KiB.
     auto row3 = new QHBoxLayout;
     row3->setSpacing(4);
     auto sizeLabel = new QLabel(tr("SIZE"), this);
@@ -1080,11 +1497,14 @@ void CalculatorView::buildLayout()
     sizeDisplay_->setToolTip(tr("X read as a byte count, in binary units "
                                 "(KiB = 1024, MiB, GiB, …)."));
     sizeDisplay_->setMinimumHeight(baseFieldH);
+    sizeDisplay_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(sizeDisplay_, &QWidget::customContextMenuRequested, this,
+            [this](const QPoint &pos){ showFieldContextMenu(sizeDisplay_, pos); });
     row3->addWidget(sizeDisplay_, 1);
     baseRows->addLayout(row3);
     root->addLayout(baseRows);
 
-    // --- controls: keypad (4x4) + ops (5x4) side by side ---
+    // --- controls: keypad (4x4) + ops (6x4) side by side ---
     auto controlsHBox = new QHBoxLayout;
     controlsHBox->setSpacing(4);
 
@@ -1101,28 +1521,41 @@ void CalculatorView::buildLayout()
 
     auto opGrid = new QGridLayout;
     opGrid->setHorizontalSpacing(3); opGrid->setVerticalSpacing(3);
-    struct D { int r, c; const char *label; const char *token; bool isOp; bool danger; };
+    struct D { int r, c; const char *label; const char *token; bool isOp; bool danger; const char *tip; };
     const D defs[] = {
-        {0,0,"+","ADD",1,0},{0,1,"-","SUB",1,0},{0,2,"*","MUL",1,0},{0,3,"/","DIV",1,0},{0,4,"Mod","MOD",1,0},
-        {1,0,"And","AND",1,0},{1,1,"Or","OR",1,0},{1,2,"Xor","XOR",1,0},{1,3,"<<","SHL",1,0},{1,4,">>","SHR",1,0},
-        {2,0,"+/-","NEG",0,0},{2,1,"Not","NOT",0,0},{2,2,"Rv","ROLL",0,0},{2,3,"X<>Y","SWAP",0,0},{2,4,"Bsp","BSP",0,0},
-        {3,0,"CLx","CLX",0,1},{3,1,"CLR","CLR",0,1},
+        {0,0,"+","ADD",1,0,"Add  Y + X   (+)"},
+        {0,1,"-","SUB",1,0,"Subtract  Y - X   (-)"},
+        {0,2,"*","MUL",1,0,"Multiply  Y * X   (*)"},
+        {0,3,"/","DIV",1,0,"Divide  Y / X   (/)"},
+        {0,4,"Mod","MOD",1,0,"Modulo  Y % X   (%)"},
+        {0,5,"Rol","ROL",1,0,"Rotate Y left by X bits within Y's width"},
+        {1,0,"And","AND",1,0,"Bitwise AND  Y & X   (&)"},
+        {1,1,"Or","OR",1,0,"Bitwise OR  Y | X   (|)"},
+        {1,2,"Xor","XOR",1,0,"Bitwise XOR  Y ^ X   (^)"},
+        {1,3,"<<","SHL",1,0,"Shift Y left by X bits   (< or ()"},
+        {1,4,">>","SHR",1,0,"Logical shift Y right by X bits   (> or ))"},
+        {1,5,"Ror","ROR",1,0,"Rotate Y right by X bits within Y's width"},
+        {2,0,"+/-","NEG",0,0,"Two's-complement negate X   (N or _)"},
+        {2,1,"Not","NOT",0,0,"Bitwise NOT X   (~ or !)"},
+        {2,2,"Rv","ROLL",0,0,"Roll stack down   (R)"},
+        {2,3,"X<>Y","SWAP",0,0,"Swap X and Y   (S)"},
+        {2,4,"Bsp","BSP",0,0,"Backspace last digit   (Backspace)"},
+        {2,5,">>>","ASR",1,0,"Arithmetic shift Y right by X bits (sign-extended)"},
+        {3,0,"CLx","CLX",0,1,"Clear X register   (Delete)"},
+        {3,1,"CLR","CLR",0,1,"Clear entire stack   (Esc)"},
+        {3,4,"Bswap","BSWAP",0,0,"Byte-swap X within its width (endian flip)"},
     };
     for (const D &d : defs) {
         QPushButton *b;
         if (d.isOp)
-            b = makeOp(d.label, d.token);
+            b = makeOp(d.label, d.token, tr(d.tip));
         else
-            b = makeCommand(d.label, d.token, d.danger ? "danger" : nullptr);
+            b = makeCommand(d.label, d.token, d.danger ? "danger" : nullptr, tr(d.tip));
         opGrid->addWidget(b, d.r, d.c);
     }
-    // {,} concat and {N} replicate sit in row 3 (CLx CLR {,} {N}), keeping the
-    // op grid at 4 rows so it matches the 4-row digit keypad height. A marquee
-    // selection, if active, becomes X's slice for the op (extracted, width =
-    // span) — without changing X while merely inspecting/copying.
     auto sliceOpBtn = [this](const QString &label, const QString &token, const QString &tip) {
         auto b = new QPushButton(label, this);
-        b->setMinimumHeight(30); b->setMinimumWidth(34);
+        b->setMinimumHeight(31); b->setMinimumWidth(44);
         b->setFocusPolicy(Qt::NoFocus);
         b->setToolTip(tip);
         connect(b, &QPushButton::clicked, this, [this, token]{
@@ -1135,24 +1568,39 @@ void CalculatorView::buildLayout()
         return b;
     };
     opGrid->addWidget(sliceOpBtn(tr("{,}"), QStringLiteral("CONCAT"),
-                                 tr("Concatenate {Y,X} — a selected slice becomes X")), 3, 2);
+                                 tr("Concatenate {Y,X} — a selected slice becomes X   ({ or ,)")), 3, 2);
     opGrid->addWidget(sliceOpBtn(tr("{N}"), QStringLiteral("REPL"),
-                                 tr("Replicate {N{X}} — a selected slice becomes X")), 3, 3);
+                                 tr("Replicate {N{X}} — a selected slice becomes X   (})")), 3, 3);
+
+    auto maskBtn = new QPushButton(tr("Mask"), this);
+    maskBtn->setMinimumHeight(31); maskBtn->setMinimumWidth(44);
+    maskBtn->setFocusPolicy(Qt::NoFocus);
+    maskBtn->setToolTip(tr("Generate low X-bit mask (1<<X)-1, or mask of selected [hi:lo] bits"));
+    connect(maskBtn, &QPushButton::clicked, this, [this]{
+        if (selLo_ >= 0) {
+            emit sliceMaskRequested(selLo_, selHi_);
+            clearBitSelection();
+        } else {
+            emit commandPressed(QStringLiteral("MASK"));
+        }
+    });
+    opGrid->addWidget(maskBtn, 3, 5);
+
     controlsHBox->addLayout(opGrid, 1);
     root->addLayout(controlsHBox);
 
     // --- full-width ENTER ---
     // A selected slice is pushed to Y (X keeps its width); else normal lift.
-    auto enterBtn = new QPushButton(tr("ENTER"), this);
-    enterBtn->setObjectName("enter");
-    enterBtn->setMinimumHeight(34);
-    enterBtn->setMinimumWidth(34);
-    enterBtn->setFocusPolicy(Qt::NoFocus);
-    connect(enterBtn, &QPushButton::clicked, this, [this]{
+    enterBtn_ = new QPushButton(tr("ENTER"), this);
+    enterBtn_->setObjectName("enter");
+    enterBtn_->setMinimumHeight(34);
+    enterBtn_->setMinimumWidth(34);
+    enterBtn_->setFocusPolicy(Qt::NoFocus);
+    connect(enterBtn_, &QPushButton::clicked, this, [this]{
         if (!commitSelectionIfAny())
             emit commandPressed("ENTER");
     });
-    root->addWidget(enterBtn);
+    root->addWidget(enterBtn_);
 
     // --- status line (hover readout) ---
     statusLabel_ = new QLabel(this);
@@ -1173,12 +1621,209 @@ void CalculatorView::buildLayout()
 }
 
 // ---------------------------------------------------------------------------
+// dialogs & context menus
+// ---------------------------------------------------------------------------
+void CalculatorView::showWidthMenu()
+{
+    QMenu menu(this);
+    const int presets[] = {4, 8, 12, 16, 24, 32, 48, 64};
+    for (int w : presets) {
+        const QString lbl = (w == activeWidth_)
+                                ? QStringLiteral("%1  %2 bits").arg(QChar(0x2022)).arg(w)
+                                : QStringLiteral("   %1 bits").arg(w);
+        QAction *act = menu.addAction(lbl);
+        connect(act, &QAction::triggered, this, [this, w]{
+            if (w == 8 || w == 16 || w == 32 || w == 64)
+                emit bitWidthRequested(w);
+            else
+                emit customBitWidthRequested(w);
+        });
+    }
+    menu.addSeparator();
+    QAction *customAct = menu.addAction(tr("Custom width (1-64)..."));
+    connect(customAct, &QAction::triggered, this, [this]{
+        bool ok = false;
+        const int w = QInputDialog::getInt(this, tr("Custom Bit Width"),
+                                           tr("Bit width (1 - 64):"),
+                                           activeWidth_, 1, 64, 1, &ok);
+        if (ok) {
+            if (w == 8 || w == 16 || w == 32 || w == 64)
+                emit bitWidthRequested(w);
+            else
+                emit customBitWidthRequested(w);
+        }
+    });
+    menu.exec(widthMenuBtn_->mapToGlobal(QPoint(0, widthMenuBtn_->height())));
+}
+
+void CalculatorView::showFieldContextMenu(QWidget *target, const QPoint &pos)
+{
+    QMenu menu(this);
+    if (target == hexDisplay_ || target == octDisplay_ || target == decimalDisplay_) {
+        const QString base = (target == hexDisplay_)     ? QStringLiteral("HEX")
+                           : (target == octDisplay_)     ? QStringLiteral("OCT")
+                                                         : QStringLiteral("DEC");
+        const QString rawText = static_cast<QLineEdit *>(target)->text();
+        const QString bare = bareDisplayText(rawText, base);
+        connect(menu.addAction(tr("Copy %1 value").arg(base)), &QAction::triggered, this, [this, bare, base]{
+            copyTextWithFeedback(bare, base);
+        });
+        if (base != QLatin1String("DEC")) {
+            const QString prefix = (base == QLatin1String("HEX")) ? QStringLiteral("0x")
+                                                                  : QStringLiteral("0o");
+            connect(menu.addAction(tr("Copy %1%2").arg(prefix, bare)), &QAction::triggered,
+                    this, [this, val = prefix + bare, base]{
+                copyTextWithFeedback(val, base);
+            });
+        }
+        if (activeBase_ != base) {
+            connect(menu.addAction(tr("Switch active base to %1").arg(base)), &QAction::triggered,
+                    this, [this, base]{ emit baseSelected(base); });
+        }
+        const QString clip = QGuiApplication::clipboard()->text();
+        if (!clip.isEmpty()) {
+            menu.addSeparator();
+            connect(menu.addAction(tr("Paste into X")), &QAction::triggered,
+                    this, [this, clip]{ emit pasteRequested(clip); });
+        }
+    } else if (target == charDisplay_) {
+        connect(menu.addAction(tr("Copy ASCII (%1)").arg(charText_)), &QAction::triggered,
+                this, [this]{ copyTextWithFeedback(charText_, QStringLiteral("CHR")); });
+    } else if (target == sizeDisplay_) {
+        const QString sz = sizeText();
+        connect(menu.addAction(tr("Copy size (%1)").arg(sz)), &QAction::triggered,
+                this, [this, sz]{ copyTextWithFeedback(sz, QStringLiteral("SIZE")); });
+        connect(menu.addAction(tr("Copy byte count (%1)").arg(lastBitValue_)), &QAction::triggered,
+                this, [this]{ copyTextWithFeedback(QString::number(lastBitValue_), QStringLiteral("Bytes")); });
+    } else if (target && target->property("stackRow").isValid()) {
+        const int row = target->property("stackRow").toInt();   // 0=T,1=Z,2=Y,3=X
+        const int modelIdx = 3 - row;                           // 3=T,2=Z,1=Y,0=X
+        const QString lit = static_cast<QLineEdit *>(target)->text();
+        connect(menu.addAction(tr("Copy literal (%1)").arg(lit)), &QAction::triggered,
+                this, [this, lit]{ copyTextWithFeedback(lit); });
+        if (modelIdx >= 1) {
+            connect(menu.addAction(tr("Recall to X")), &QAction::triggered,
+                    this, [this, modelIdx]{ emit stackRecallRequested(modelIdx); });
+        }
+        if (modelIdx == 1) {
+            connect(menu.addAction(tr("Swap X <-> Y")), &QAction::triggered,
+                    this, [this]{ emit commandPressed(QStringLiteral("SWAP")); });
+        }
+        if (modelIdx == 0) {
+            const QString clip = QGuiApplication::clipboard()->text();
+            if (!clip.isEmpty()) {
+                menu.addSeparator();
+                connect(menu.addAction(tr("Paste into X")), &QAction::triggered,
+                        this, [this, clip]{ emit pasteRequested(clip); });
+            }
+        }
+    }
+    if (!menu.actions().isEmpty())
+        menu.exec(target->mapToGlobal(pos));
+}
+
+void CalculatorView::showShortcutsDialog()
+{
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("BinCalcX Shortcuts"));
+    dlg.setStyleSheet(styleSheet());
+
+    auto lay = new QVBoxLayout(&dlg);
+    lay->setContentsMargins(14, 12, 14, 12);
+    lay->setSpacing(10);
+
+    auto grid = new QGridLayout;
+    grid->setContentsMargins(0, 0, 0, 0);
+    grid->setHorizontalSpacing(18);
+    grid->setVerticalSpacing(4);
+    grid->setColumnStretch(1, 1);
+
+    struct Row { bool isHeader; QString key; QString desc; };
+    const Row rows[] = {
+        {true,  tr("Entry & Bases"), {}},
+        {false, QStringLiteral("0-9, A-F"),           tr("Enter digit (current base)")},
+        {false, QStringLiteral("F5 / F6 / F7 / F8"),  tr("Switch base: HEX / DEC / OCT / BIN")},
+        {false, QStringLiteral("Ctrl+1 / 2 / 3 / 4"), tr("Set bit width: 8 / 16 / 32 / 64")},
+        {false, QStringLiteral("U"),                  tr("Toggle Signed view")},
+
+        {true,  tr("Arithmetic & Bitwise"), {}},
+        {false, QStringLiteral("+ - * / %"),          tr("Add / Sub / Mul / Div / Mod")},
+        {false, QStringLiteral("& | ^ ~"),            tr("Bitwise AND / OR / XOR / NOT")},
+        {false, QStringLiteral("<  >"),               tr("Shift Y left / right by X")},
+        {false, QStringLiteral("[  ]"),               tr("In-place shift X left / right by 1")},
+        {false, QStringLiteral("{ or ,  /  }"),       tr("Concat {Y,X} / Replicate {N{X}}")},
+
+        {true,  tr("Stack & Bit Grid"), {}},
+        {false, QStringLiteral("Enter"),              tr("Push X (or selected slice) to Y")},
+        {false, QStringLiteral("Shift+Enter"),        tr("Extract selected [hi:lo] into X")},
+        {false, QStringLiteral("R / S / N"),          tr("Roll / Swap X<->Y / Negate")},
+        {false, QStringLiteral("Del / Esc"),          tr("Clear X / Cancel sel or Clear all")},
+        {false, QStringLiteral("Arrows / Space"),     tr("Navigate bits / Toggle focused bit")},
+        {false, QStringLiteral("Shift+Arrows"),       tr("Select bit range")},
+
+        {true,  tr("Clipboard, History & Window"), {}},
+        {false, QStringLiteral("Ctrl+C / Ctrl+Shift+C"), tr("Copy bare / Prefixed (0x, 0b, SV)")},
+        {false, QStringLiteral("Ctrl+V"),             tr("Paste (0x/0b/0o/Verilog literals)")},
+        {false, QStringLiteral("Ctrl+Z / Ctrl+Y"),    tr("Undo / Redo")},
+        {false, QStringLiteral("Ctrl+T"),             tr("Toggle stay-on-top")},
+        {false, QStringLiteral("F1 / ?"),             tr("Show this shortcuts reference")},
+    };
+
+    int r = 0;
+    for (const Row &item : rows) {
+        if (item.isHeader) {
+            if (r > 0)
+                grid->setRowMinimumHeight(r++, 6);
+            auto hdr = new QLabel(item.key, &dlg);
+            QFont hf = hdr->font();
+            hf.setBold(true);
+            hf.setPointSize(9);
+            hdr->setFont(hf);
+            hdr->setStyleSheet(QStringLiteral("color: %1;").arg(accent_));
+            grid->addWidget(hdr, r++, 0, 1, 2);
+        } else {
+            auto kLbl = new QLabel(item.key, &dlg);
+            QFont kf = kLbl->font();
+            kf.setBold(true);
+            kf.setPointSize(9);
+            kLbl->setFont(kf);
+            kLbl->setContentsMargins(10, 0, 0, 0);
+            kLbl->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+
+            auto dLbl = new QLabel(item.desc, &dlg);
+            QFont df = dLbl->font();
+            df.setPointSize(9);
+            dLbl->setFont(df);
+            dLbl->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+
+            grid->addWidget(kLbl, r, 0);
+            grid->addWidget(dLbl, r, 1);
+            ++r;
+        }
+    }
+    lay->addLayout(grid);
+
+    auto closeRow = new QHBoxLayout;
+    closeRow->addStretch(1);
+    auto closeBtn = new QPushButton(tr("Close"), &dlg);
+    closeBtn->setMinimumWidth(72);
+    closeBtn->setDefault(true);
+    connect(closeBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
+    closeRow->addWidget(closeBtn);
+    lay->addLayout(closeRow);
+
+    dlg.adjustSize();
+    dlg.setFixedSize(dlg.sizeHint());
+    dlg.exec();
+}
+
+// ---------------------------------------------------------------------------
 // factories
 // ---------------------------------------------------------------------------
 QPushButton *CalculatorView::makeDigit(const QString &text)
 {
     auto b = new QPushButton(text, this);
-    b->setFixedSize(36, 30);
+    b->setFixedSize(40, 31);
     b->setFocusPolicy(Qt::NoFocus);
     QFont f = b->font(); f.setBold(true); f.setPointSize(10); b->setFont(f);
     connect(b, &QPushButton::clicked, this, [this, text]{ emit digitPressed(text); });
@@ -1189,23 +1834,25 @@ QPushButton *CalculatorView::makeDigit(const QString &text)
     return b;
 }
 
-QPushButton *CalculatorView::makeOp(const QString &label, const QString &opToken)
+QPushButton *CalculatorView::makeOp(const QString &label, const QString &opToken, const QString &tip)
 {
     auto b = new QPushButton(label, this);
-    b->setMinimumHeight(30); b->setMinimumWidth(34);
+    b->setMinimumHeight(31); b->setMinimumWidth(44);
     b->setFocusPolicy(Qt::NoFocus);
     b->setObjectName("op");
+    if (!tip.isEmpty()) b->setToolTip(tip);
     connect(b, &QPushButton::clicked, this, [this, opToken]{ emit binaryOpPressed(opToken); });
     return b;
 }
 
 QPushButton *CalculatorView::makeCommand(const QString &label, const QString &cmdToken,
-                                         const char *objectName)
+                                         const char *objectName, const QString &tip)
 {
     auto b = new QPushButton(label, this);
-    b->setMinimumHeight(30); b->setMinimumWidth(34);
+    b->setMinimumHeight(31); b->setMinimumWidth(44);
     b->setFocusPolicy(Qt::NoFocus);
     if (objectName) b->setObjectName(QString::fromLatin1(objectName));
+    if (!tip.isEmpty()) b->setToolTip(tip);
     connect(b, &QPushButton::clicked, this, [this, cmdToken]{ emit commandPressed(cmdToken); });
     return b;
 }
@@ -1230,8 +1877,8 @@ QPushButton *CalculatorView::makeShiftButton(const QString &glyph, bool left)
     b->setObjectName("shiftBtn");
     b->setFixedWidth(20);
     b->setFocusPolicy(Qt::NoFocus);
-    b->setToolTip(left ? tr("Shift X left by 1   (X = X << 1)")
-                       : tr("Shift X right by 1   (X = X >> 1, sign-extends if Signed)"));
+    b->setToolTip(left ? tr("Shift X left by 1   (X = X << 1)   ([)")
+                       : tr("Shift X right by 1   (X = X >> 1, sign-extends if Signed)   (])"));
     connect(b, &QPushButton::clicked, this, [this, left]{ emit shiftRequested(left); });
     return b;
 }
@@ -1249,6 +1896,17 @@ QToolButton *CalculatorView::makeWidthButton(const QString &label, int width)
     // 8→0  16→1  32→2  64→3
     const int idx = (width == 8) ? 0 : (width == 16) ? 1 : (width == 32) ? 2 : 3;
     widthBtns_[idx] = b;
+    return b;
+}
+
+QToolButton *CalculatorView::makeSliceActionBtn(const QString &label, const QString &tip)
+{
+    auto b = new QToolButton(this);
+    b->setObjectName("sliceBarBtn");
+    b->setText(label);
+    b->setFocusPolicy(Qt::NoFocus);
+    b->setToolTip(tip);
+    QFont f = b->font(); f.setPointSize(8); b->setFont(f);
     return b;
 }
 

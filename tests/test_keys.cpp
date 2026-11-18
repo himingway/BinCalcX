@@ -144,6 +144,69 @@ private slots:
         QCOMPARE(spy.count(), 0);
     }
 
+    // ── new shortcuts: history, bases, widths, shifts, hardware, keyboard selection ──
+    void historyAndWidthShortcuts()
+    {
+        QSignalSpy cmdSpy(view.data(), &CalculatorView::commandPressed);
+        sendKey(Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(cmdSpy.takeFirst().at(0).toString(), QStringLiteral("UNDO"));
+        sendKey(Qt::Key_Y, Qt::ControlModifier);
+        QCOMPARE(cmdSpy.takeFirst().at(0).toString(), QStringLiteral("REDO"));
+        sendKey(Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+        QCOMPARE(cmdSpy.takeFirst().at(0).toString(), QStringLiteral("REDO"));
+
+        QSignalSpy wSpy(view.data(), &CalculatorView::bitWidthRequested);
+        sendKey(Qt::Key_1, Qt::ControlModifier);
+        QCOMPARE(wSpy.takeFirst().at(0).toInt(), 8);
+        sendKey(Qt::Key_4, Qt::ControlModifier);
+        QCOMPARE(wSpy.takeFirst().at(0).toInt(), 64);
+    }
+    void baseFunctionKeys()
+    {
+        QSignalSpy bSpy(view.data(), &CalculatorView::baseSelected);
+        sendKey(Qt::Key_F5);
+        QCOMPARE(bSpy.takeFirst().at(0).toString(), QStringLiteral("HEX"));
+        sendKey(Qt::Key_F8);
+        QCOMPARE(bSpy.takeFirst().at(0).toString(), QStringLiteral("BIN"));
+    }
+    void shiftBracketsAndHardwareKeys()
+    {
+        QSignalSpy sSpy(view.data(), &CalculatorView::shiftRequested);
+        sendChar('[');
+        QCOMPARE(sSpy.takeFirst().at(0).toBool(), true);
+        sendChar(']');
+        QCOMPARE(sSpy.takeFirst().at(0).toBool(), false);
+        QCOMPARE(spiedCommand('{'), QStringLiteral("CONCAT"));
+        QCOMPARE(spiedCommand('}'), QStringLiteral("REPL"));
+    }
+    void shiftArrowSelectsAndShiftEnterExtracts()
+    {
+        view->setActiveWidth(64);
+        sendKey(Qt::Key_Escape);   // ensure no prior selection
+        // arrowKeysMoveBitFocus() left focusBit_ at 63; one plain Left wraps 63 -> 0.
+        sendKey(Qt::Key_Left);
+        QCOMPARE(toggledBit(), 0);
+        QSignalSpy selSpy(view.data(), &CalculatorView::selectionChanged);
+        sendKey(Qt::Key_Left, Qt::ShiftModifier);
+        sendKey(Qt::Key_Left, Qt::ShiftModifier);
+        QVERIFY(selSpy.count() >= 2);
+        auto last = selSpy.last();
+        QCOMPARE(last.at(0).toInt(), 0);
+        QCOMPARE(last.at(1).toInt(), 2);
+
+        // Shrinking selection back with Shift+Right
+        sendKey(Qt::Key_Right, Qt::ShiftModifier);
+        last = selSpy.last();
+        QCOMPARE(last.at(0).toInt(), 0);
+        QCOMPARE(last.at(1).toInt(), 1);
+
+        QSignalSpy applySpy(view.data(), &CalculatorView::sliceApplyRequested);
+        sendKey(Qt::Key_Return, Qt::ShiftModifier);
+        QCOMPARE(applySpy.count(), 1);
+        QCOMPARE(applySpy.first().at(0).toInt(), 0);
+        QCOMPARE(applySpy.first().at(1).toInt(), 1);
+    }
+
 private:
     QScopedPointer<CalculatorView> view;
 

@@ -5,6 +5,65 @@
 
 namespace {
 
+constexpr std::size_t kMaxHistory = 128;
+
+/// Parse a Verilog / SystemVerilog literal like `8'hFF`, `32'b1010_0101`,
+/// `8'sd-1`, `-8'd5`, `'hDEAD`. Sets `outWidth` to -1 when unsized (`'hFF`),
+/// or `1..64` when sized. Returns false if `raw` does not contain `'`.
+bool parseVerilogLiteral(const QString &raw, bool outerNeg,
+                         int &outWidth, quint64 &outValue)
+{
+    const int tick = raw.indexOf(QLatin1Char('\''));
+    if (tick < 0)
+        return false;
+
+    const QString widthPart = raw.left(tick).trimmed();
+    int width = -1;
+    if (!widthPart.isEmpty()) {
+        bool okW = false;
+        const int w = widthPart.toInt(&okW, 10);
+        if (!okW || w <= 0)
+            return false;
+        width = std::min(w, 64);
+    }
+
+    QString body = raw.mid(tick + 1).trimmed();
+    if (body.isEmpty())
+        return false;
+    if (body.at(0).toLower() == QLatin1Char('s'))
+        body = body.mid(1).trimmed();
+    if (body.isEmpty())
+        return false;
+
+    int radix = 0;
+    const QChar b = body.at(0).toLower();
+    if      (b == QLatin1Char('b')) radix = 2;
+    else if (b == QLatin1Char('o')) radix = 8;
+    else if (b == QLatin1Char('d')) radix = 10;
+    else if (b == QLatin1Char('h')) radix = 16;
+    else return false;
+
+    QString digits = body.mid(1).trimmed();
+    bool innerNeg = false;
+    if (digits.startsWith(QLatin1Char('-')))      { innerNeg = true; digits = digits.mid(1).trimmed(); }
+    else if (digits.startsWith(QLatin1Char('+'))) { digits = digits.mid(1).trimmed(); }
+
+    digits.remove(QLatin1Char(' '));
+    digits.remove(QLatin1Char('_'));
+    digits.remove(QLatin1Char(','));
+    if (digits.isEmpty())
+        return false;
+
+    bool okV = false;
+    const quint64 v = digits.toULongLong(&okV, radix);
+    if (!okV)
+        return false;
+
+    outWidth = width;
+    outValue = (outerNeg != innerNeg) ? (0ULL - v) : v;
+    return true;
+}
+
 /// Format a masked value in the given base, honouring the active width.
 /// `signedValue` is already sign-extended relative to the width; signedness only
 /// affects the decimal representation.
@@ -26,7 +85,7 @@ QString formatValue(quint64 u, qint64 signedValue,
     case CalculatorModel::Base::Decimal:
         return isSigned ? QString::number(signedValue) : QString::number(u);
     case CalculatorModel::Base::Hexadecimal: {
-        const int digits = width / 4;
+        const int digits = std::max(1, (width + 3) / 4);
         QString h = QString("%1").arg(u, digits, 16, QLatin1Char('0')).toUpper();
         for (int i = digits - 4; i > 0; i -= 4)
             h.insert(i, QLatin1Char(' '));   // group into 4-digit words
@@ -107,6 +166,14 @@ std::array<QString, 4> CalculatorModel::stackStrings() const
              verilogLiteral(stack_[0], base_, signed_) };
 }
 
+std::array<QString, 4> CalculatorModel::stackTooltips() const
+{
+    return { registerTooltip(stack_[3], QStringLiteral("T")),
+             registerTooltip(stack_[2], QStringLiteral("Z")),
+             registerTooltip(stack_[1], QStringLiteral("Y")),
+             registerTooltip(stack_[0], QStringLiteral("X")) };
+}
+
 QString CalculatorModel::xVerilogLiteral() const
 {
     return verilogLiteral(stack_[0], base_, signed_);
@@ -153,6 +220,14 @@ void CalculatorModel::setBitWidth(int bits)
     // carried width). X's own width follows it here; T/Z/Y keep theirs.
     if (bits != 8 && bits != 16 && bits != 32 && bits != 64)
         return;
+    setCustomBitWidth(bits);
+}
+
+void CalculatorModel::setCustomBitWidth(int bits)
+{
+    if (bits < 1 || bits > 64)
+        return;
+    const HistoryEntry before = captureState();
     widthSetting_ = bits;
     if (bits == stack_[0].width)
         return;
@@ -161,6 +236,7 @@ void CalculatorModel::setBitWidth(int bits)
     if (entering_)
         stack_[0].value = normalize(parseBuffer(), bits);
     liftOnNext_ = false;
+    recordHistory(before);
     refresh();   // smart-refresh emits bitWidthChanged(bits)
 }
 
@@ -174,6 +250,9 @@ void CalculatorModel::inputDigit(const QString &digit)
     if (!isValidDigit(QString(c)))
         return;
 
+    const HistoryEntry before = captureState();
+    const bool startingEntry = !entering_;
+
     // Starting a fresh entry clears the stale buffer first — do this BEFORE the
     // length guard, otherwise a buffer left full by a previous ENTER blocks new
     // input even though we're not appending to it.
@@ -184,8 +263,10 @@ void CalculatorModel::inputDigit(const QString &digit)
         entering_ = true;
         stack_[0].width = widthSetting_;   // entry uses the W-selected width, not a narrow result's
     }
-    if (buffer_.length() >= maxInputLength())
+    if (buffer_.length() >= maxInputLength()) {
+        if (startingEntry) restoreState(before);
         return;   // cheap length pre-check (exact for BIN/HEX)
+    }
 
     // Form the candidate buffer (honouring the leading-zero rule), then reject
     // the digit if the value would overflow quint64 or the active width —
@@ -197,12 +278,17 @@ void CalculatorModel::inputDigit(const QString &digit)
 
     bool ok = false;
     const quint64 v = candidate.toULongLong(&ok, radix());
-    if (!ok || v > mask(stack_[0].width))
+    if (!ok || v > mask(stack_[0].width)) {
+        if (startingEntry) restoreState(before);
         return;
+    }
 
     buffer_ = candidate;
     stack_[0].value = normalize(static_cast<qint64>(v), stack_[0].width);
     liftOnNext_ = true;
+    // Coalesce multi-digit typing into a single undo step (captured at start of entry).
+    if (startingEntry)
+        recordHistory(before);
     refresh();
 }
 
@@ -230,36 +316,51 @@ bool CalculatorModel::loadFromText(const QString &raw)
     if (s.isEmpty())
         return false;
 
-    // C-style base prefix overrides the active base; default to it otherwise.
-    int radix = this->radix();
-    if (s.size() >= 2 && s.at(0) == '0') {
-        const QChar p = s.at(1).toLower();
-        if (p == 'x')      { radix = 16; s = s.mid(2); }
-        else if (p == 'b') { radix = 2;  s = s.mid(2); }
-        else if (p == 'o') { radix = 8;  s = s.mid(2); }
+    int targetWidth = stack_[0].width;
+    quint64 finalv = 0;
+
+    if (s.contains(QLatin1Char('\''))) {
+        int verilogWidth = -1;
+        if (!parseVerilogLiteral(s, negative, verilogWidth, finalv))
+            return false;
+        if (verilogWidth > 0)
+            targetWidth = verilogWidth;
+    } else {
+        // C-style base prefix overrides the active base; default to it otherwise.
+        int radix = this->radix();
+        if (s.size() >= 2 && s.at(0) == '0') {
+            const QChar p = s.at(1).toLower();
+            if (p == 'x')      { radix = 16; s = s.mid(2); }
+            else if (p == 'b') { radix = 2;  s = s.mid(2); }
+            else if (p == 'o') { radix = 8;  s = s.mid(2); }
+        }
+
+        // Drop the digit separators the model itself emits (spaces) plus the ones
+        // other tools copy out (underscores, commas).
+        s.remove(' ');
+        s.remove('_');
+        s.remove(',');
+        if (s.isEmpty())
+            return false;
+
+        bool ok = false;
+        const quint64 v = s.toULongLong(&ok, radix);
+        if (!ok)
+            return false;
+
+        // Negate in the unsigned domain: `-static_cast<qint64>(v)` is UB for
+        // v ≥ 2^63 (the INT64_MIN pattern), and unsigned wraparound is exactly the
+        // two's-complement result the mask below then narrows to the width.
+        finalv = negative ? (0ULL - v) : v;
     }
 
-    // Drop the digit separators the model itself emits (spaces) plus the ones
-    // other tools copy out (underscores, commas).
-    s.remove(' ');
-    s.remove('_');
-    s.remove(',');
-    if (s.isEmpty())
-        return false;
-
-    bool ok = false;
-    const quint64 v = s.toULongLong(&ok, radix);
-    if (!ok)
-        return false;
-
-    // Negate in the unsigned domain: `-static_cast<qint64>(v)` is UB for
-    // v ≥ 2^63 (the INT64_MIN pattern), and unsigned wraparound is exactly the
-    // two's-complement result the mask below then narrows to the width.
-    const quint64 finalv = negative ? (0ULL - v) : v;
-    stack_[0].value = normalize(static_cast<qint64>(finalv), stack_[0].width);
+    const HistoryEntry before = captureState();
+    stack_[0].width = targetWidth;
+    stack_[0].value = normalize(static_cast<qint64>(finalv), targetWidth);
     buffer_ = QStringLiteral("0");
     entering_ = false;
     liftOnNext_ = true;   // a following typed digit lifts the stack, preserving this
+    recordHistory(before);
     refresh();
     return true;
 }
@@ -270,15 +371,18 @@ bool CalculatorModel::loadFromText(const QString &raw)
 
 void CalculatorModel::clearX()
 {
+    const HistoryEntry before = captureState();
     buffer_ = QLatin1String("0");
     stack_[0].value = 0;   // CLx keeps X's width (so a Set-Width survives CLx)
     entering_ = true;
     liftOnNext_ = false;
+    recordHistory(before);
     refresh();
 }
 
 void CalculatorModel::clearAll()
 {
+    const HistoryEntry before = captureState();
     // Zero every register at the W-selected width (CLR clears values but keeps
     // the W setting, so the stack is a clean W-width slate — not stuck at a
     // narrow concat result width).
@@ -287,11 +391,13 @@ void CalculatorModel::clearAll()
     buffer_ = QLatin1String("0");
     entering_ = false;
     liftOnNext_ = true;
+    recordHistory(before);
     refresh();
 }
 
 void CalculatorModel::negate()
 {
+    const HistoryEntry before = captureState();
     // Two's complement within X's width. Negate in the unsigned domain —
     // `-stack_[0].value` is UB when the pattern is INT64_MIN (0x8000..0),
     // which in two's complement negates to itself; unsigned wraparound gives
@@ -300,22 +406,26 @@ void CalculatorModel::negate()
     stack_[0].value = normalize(static_cast<qint64>(0ULL - v), stack_[0].width);
     entering_ = false;
     liftOnNext_ = false;
+    recordHistory(before);
     refresh();
 }
 
 void CalculatorModel::enter()
 {
+    const HistoryEntry before = captureState();
     if (entering_) {
         stack_[0].value = normalize(parseBuffer(), stack_[0].width);
         entering_ = false;
     }
     lift();   // lifted copy into Y keeps X's width
     liftOnNext_ = false;
+    recordHistory(before);
     refresh();
 }
 
 void CalculatorModel::rollDown()
 {
+    const HistoryEntry before = captureState();
     const Reg t = stack_[3];
     stack_[3] = stack_[0];   // T <- X
     stack_[0] = stack_[1];   // X <- Y
@@ -323,14 +433,58 @@ void CalculatorModel::rollDown()
     stack_[2] = t;           // Z <- T
     entering_ = false;
     liftOnNext_ = false;
+    recordHistory(before);
     refresh();
 }
 
 void CalculatorModel::swapXY()
 {
+    const HistoryEntry before = captureState();
     std::swap(stack_[0], stack_[1]);
     entering_ = false;
     liftOnNext_ = false;
+    recordHistory(before);
+    refresh();
+}
+
+void CalculatorModel::copyStackToX(int index)
+{
+    if (index < 1 || index > 3)
+        return;
+    const HistoryEntry before = captureState();
+    if (entering_) {
+        stack_[0].value = normalize(parseBuffer(), stack_[0].width);
+        entering_ = false;
+    }
+    const Reg recalled = stack_[index];
+    lift();
+    stack_[0] = recalled;
+    liftOnNext_ = true;
+    recordHistory(before);
+    refresh();
+}
+
+void CalculatorModel::undo()
+{
+    if (undoStack_.empty())
+        return;
+    redoStack_.push_back(captureState());
+    if (redoStack_.size() > kMaxHistory)
+        redoStack_.erase(redoStack_.begin());
+    restoreState(undoStack_.back());
+    undoStack_.pop_back();
+    refresh();
+}
+
+void CalculatorModel::redo()
+{
+    if (redoStack_.empty())
+        return;
+    undoStack_.push_back(captureState());
+    if (undoStack_.size() > kMaxHistory)
+        undoStack_.erase(undoStack_.begin());
+    restoreState(redoStack_.back());
+    redoStack_.pop_back();
     refresh();
 }
 
@@ -340,6 +494,7 @@ void CalculatorModel::swapXY()
 
 void CalculatorModel::applyBinaryOp(Op op)
 {
+    const HistoryEntry before = captureState();
     if (entering_) {
         stack_[0].value = normalize(parseBuffer(), stack_[0].width);
         entering_ = false;
@@ -363,22 +518,50 @@ void CalculatorModel::applyBinaryOp(Op op)
     // Shift amount X is clamped to Y's width (Y is the value being shifted).
     case Op::Shl: result = (x < static_cast<quint64>(yw)) ? (y << x) : 0; break;
     case Op::Shr: result = (x < static_cast<quint64>(yw)) ? (y >> x) : 0; break;
+    case Op::Rol: {
+        const int rot = (yw > 0) ? static_cast<int>(x % static_cast<quint64>(yw)) : 0;
+        result = (rot == 0) ? y : (((y << rot) | (y >> (yw - rot))) & mask(yw));
+        break;
+    }
+    case Op::Ror: {
+        const int rot = (yw > 0) ? static_cast<int>(x % static_cast<quint64>(yw)) : 0;
+        result = (rot == 0) ? y : (((y >> rot) | (y << (yw - rot))) & mask(yw));
+        break;
+    }
+    case Op::Asr: {
+        const bool sign = (yw > 0) && (((y >> (yw - 1)) & 1ULL) != 0);
+        if (x >= static_cast<quint64>(yw)) {
+            result = sign ? mask(yw) : 0ULL;
+        } else if (x == 0) {
+            result = y;
+        } else {
+            const int s = static_cast<int>(x);
+            const quint64 fill = sign ? (mask(yw) & ~mask(yw - s)) : 0ULL;
+            result = (y >> s) | fill;
+        }
+        break;
+    }
     }
 
-    // Result width: shifts stay in Y's field; everything else widens to the max.
-    const int rw = (op == Op::Shl || op == Op::Shr) ? yw : std::max(xw, yw);
+    // Result width: shifts & rotates stay in Y's field; everything else widens to the max.
+    const bool keepYWidth = (op == Op::Shl || op == Op::Shr ||
+                             op == Op::Rol || op == Op::Ror || op == Op::Asr);
+    const int rw = keepYWidth ? yw : std::max(xw, yw);
     stack_[0] = Reg{ normalize(static_cast<qint64>(result), rw), rw };
     stack_[1] = stack_[2];
     stack_[2] = stack_[3];
     liftOnNext_ = false;
+    recordHistory(before);
     refresh();
 }
 
 void CalculatorModel::applyNot()
 {
+    const HistoryEntry before = captureState();
     stack_[0].value = normalize(~stack_[0].value, stack_[0].width);
     entering_ = false;
     liftOnNext_ = false;
+    recordHistory(before);
     refresh();
 }
 
@@ -386,16 +569,19 @@ void CalculatorModel::toggleBit(int bit)
 {
     if (bit < 0 || bit >= stack_[0].width)
         return;
+    const HistoryEntry before = captureState();
     const quint64 m = 1ULL << bit;
     stack_[0].value = normalize(static_cast<qint64>(static_cast<quint64>(stack_[0].value) ^ m),
                                 stack_[0].width);
     entering_ = false;
     liftOnNext_ = false;
+    recordHistory(before);
     refresh();
 }
 
 void CalculatorModel::shiftLeft()
 {
+    const HistoryEntry before = captureState();
     // X = X << 1, then physically truncate the high bits past X's width
     // (e.g. 0x80 << 1 in 8-bit becomes 0x00). Operates in place on X.
     const int w = stack_[0].width;
@@ -403,11 +589,13 @@ void CalculatorModel::shiftLeft()
     stack_[0].value = normalize(static_cast<qint64>((x << 1) & mask(w)), w);
     entering_ = false;
     liftOnNext_ = false;
+    recordHistory(before);
     refresh();
 }
 
 void CalculatorModel::shiftRight()
 {
+    const HistoryEntry before = captureState();
     // X = X >> 1. Logical (MSB → 0) when unsigned; arithmetic (sign-extended)
     // when signed, so a negative value stays negative relative to the width.
     const int w = stack_[0].width;
@@ -421,6 +609,7 @@ void CalculatorModel::shiftRight()
     stack_[0].value = normalize(static_cast<qint64>(result), w);
     entering_ = false;
     liftOnNext_ = false;
+    recordHistory(before);
     refresh();
 }
 
@@ -430,6 +619,7 @@ void CalculatorModel::shiftRight()
 
 void CalculatorModel::concatenate()
 {
+    const HistoryEntry before = captureState();
     // {Y,X}: join Y and X by their respective widths → result.width = yw + xw.
     if (entering_) { stack_[0].value = normalize(parseBuffer(), stack_[0].width); entering_ = false; }
     const int xw = stack_[0].width;
@@ -446,11 +636,13 @@ void CalculatorModel::concatenate()
     stack_[1] = stack_[2];
     stack_[2] = stack_[3];
     liftOnNext_ = false;
+    recordHistory(before);
     refresh();
 }
 
 void CalculatorModel::replicate()
 {
+    const HistoryEntry before = captureState();
     // {N{X}} with N = Y: X repeated N times → result.width = N * X.width (capped 64).
     if (entering_) { stack_[0].value = normalize(parseBuffer(), stack_[0].width); entering_ = false; }
     const int w = stack_[0].width;
@@ -475,6 +667,55 @@ void CalculatorModel::replicate()
     stack_[1] = stack_[2];
     stack_[2] = stack_[3];
     liftOnNext_ = false;
+    recordHistory(before);
+    refresh();
+}
+
+void CalculatorModel::byteSwap()
+{
+    const HistoryEntry before = captureState();
+    if (entering_) { stack_[0].value = normalize(parseBuffer(), stack_[0].width); entering_ = false; }
+    const int w = stack_[0].width;
+    const int nbytes = (w + 7) / 8;
+    const quint64 xv = xRegister();
+    quint64 rv = 0;
+    for (int i = 0; i < nbytes; ++i) {
+        const quint64 b = (xv >> (8 * i)) & 0xFFULL;
+        rv |= b << (8 * (nbytes - 1 - i));
+    }
+    stack_[0].value = normalize(static_cast<qint64>(rv), w);
+    liftOnNext_ = false;
+    recordHistory(before);
+    refresh();
+}
+
+void CalculatorModel::bitReverse()
+{
+    const HistoryEntry before = captureState();
+    if (entering_) { stack_[0].value = normalize(parseBuffer(), stack_[0].width); entering_ = false; }
+    const int w = stack_[0].width;
+    const quint64 xv = xRegister();
+    quint64 rv = 0;
+    for (int i = 0; i < w; ++i) {
+        if ((xv >> i) & 1ULL)
+            rv |= (1ULL << (w - 1 - i));
+    }
+    stack_[0].value = normalize(static_cast<qint64>(rv), w);
+    liftOnNext_ = false;
+    recordHistory(before);
+    refresh();
+}
+
+void CalculatorModel::makeMask()
+{
+    const HistoryEntry before = captureState();
+    if (entering_) { stack_[0].value = normalize(parseBuffer(), stack_[0].width); entering_ = false; }
+    const int w = stack_[0].width;
+    const quint64 n = xRegister();
+    const quint64 rv = (n >= static_cast<quint64>(w)) ? mask(w) : mask(static_cast<int>(n));
+    stack_[0].value = normalize(static_cast<qint64>(rv), w);
+    liftOnNext_ = false;
+    recordHistory(before);
     refresh();
 }
 
@@ -488,6 +729,7 @@ void CalculatorModel::applySlice(int lo, int hi)
     if (hi >= stack_[0].width) hi = stack_[0].width - 1;
     if (lo > hi)
         return;
+    const HistoryEntry before = captureState();
     if (entering_) { stack_[0].value = normalize(parseBuffer(), stack_[0].width); entering_ = false; }
     const int newW = hi - lo + 1;
     const quint64 xv = xRegister();
@@ -495,6 +737,7 @@ void CalculatorModel::applySlice(int lo, int hi)
     stack_[0].width = newW;
     entering_ = false;
     liftOnNext_ = false;
+    recordHistory(before);
     refresh();   // smart-refresh emits bitWidthChanged(newW)
 }
 
@@ -509,18 +752,92 @@ void CalculatorModel::pushSlice(int lo, int hi)
     if (hi >= stack_[0].width) hi = stack_[0].width - 1;
     if (lo > hi)
         return;
+    const HistoryEntry before = captureState();
     if (entering_) { stack_[0].value = normalize(parseBuffer(), stack_[0].width); entering_ = false; }
     const int span = hi - lo + 1;
     const quint64 seg = (xRegister() >> lo) & mask(span);
     lift();   // X→Y→Z→T (oldest T lost); X stays as-is
     stack_[1] = Reg{ normalize(static_cast<qint64>(seg), span), span };   // Y = the slice
     liftOnNext_ = false;
+    recordHistory(before);
+    refresh();
+}
+
+void CalculatorModel::setBitRange(int lo, int hi)
+{
+    const quint64 rm = rangeMask(lo, hi, stack_[0].width);
+    if (rm == 0) return;
+    const HistoryEntry before = captureState();
+    if (entering_) { stack_[0].value = normalize(parseBuffer(), stack_[0].width); entering_ = false; }
+    stack_[0].value = normalize(static_cast<qint64>(xRegister() | rm), stack_[0].width);
+    liftOnNext_ = false;
+    recordHistory(before);
+    refresh();
+}
+
+void CalculatorModel::clearBitRange(int lo, int hi)
+{
+    const quint64 rm = rangeMask(lo, hi, stack_[0].width);
+    if (rm == 0) return;
+    const HistoryEntry before = captureState();
+    if (entering_) { stack_[0].value = normalize(parseBuffer(), stack_[0].width); entering_ = false; }
+    stack_[0].value = normalize(static_cast<qint64>(xRegister() & ~rm), stack_[0].width);
+    liftOnNext_ = false;
+    recordHistory(before);
+    refresh();
+}
+
+void CalculatorModel::invertBitRange(int lo, int hi)
+{
+    const quint64 rm = rangeMask(lo, hi, stack_[0].width);
+    if (rm == 0) return;
+    const HistoryEntry before = captureState();
+    if (entering_) { stack_[0].value = normalize(parseBuffer(), stack_[0].width); entering_ = false; }
+    stack_[0].value = normalize(static_cast<qint64>(xRegister() ^ rm), stack_[0].width);
+    liftOnNext_ = false;
+    recordHistory(before);
+    refresh();
+}
+
+void CalculatorModel::maskBitRange(int lo, int hi)
+{
+    const quint64 rm = rangeMask(lo, hi, stack_[0].width);
+    if (rm == 0) return;
+    const HistoryEntry before = captureState();
+    entering_ = false;
+    stack_[0].value = normalize(static_cast<qint64>(rm), stack_[0].width);
+    liftOnNext_ = false;
+    recordHistory(before);
     refresh();
 }
 
 // ---------------------------------------------------------------------------
 // internals
 // ---------------------------------------------------------------------------
+
+CalculatorModel::HistoryEntry CalculatorModel::captureState() const
+{
+    return HistoryEntry{ stack_, buffer_, entering_, liftOnNext_, widthSetting_ };
+}
+
+void CalculatorModel::restoreState(const HistoryEntry &entry)
+{
+    stack_ = entry.stack;
+    buffer_ = entry.buffer;
+    entering_ = entry.entering;
+    liftOnNext_ = entry.liftOnNext;
+    widthSetting_ = entry.widthSetting;
+}
+
+void CalculatorModel::recordHistory(const HistoryEntry &before)
+{
+    if (captureState() == before)
+        return;
+    undoStack_.push_back(before);
+    if (undoStack_.size() > kMaxHistory)
+        undoStack_.erase(undoStack_.begin());
+    redoStack_.clear();
+}
 
 void CalculatorModel::lift()
 {
@@ -533,12 +850,36 @@ void CalculatorModel::refresh()
 {
     // Centralize width signalling: any op that moves X or changes X's width
     // (enter, rollDown, swapXY, applyBinaryOp, concat, replicate, applySlice,
-    // setBitWidth, clearAll) automatically syncs the View's selector + greying.
+    // setBitWidth, clearAll, undo, redo) automatically syncs the View.
     if (stack_[0].width != lastWidth_) {
         lastWidth_ = stack_[0].width;
         emit bitWidthChanged(stack_[0].width);
     }
+    emit historyChanged(!undoStack_.empty(), !redoStack_.empty());
     emit displayChanged();
+}
+
+quint64 CalculatorModel::rangeMask(int lo, int hi, int width) const
+{
+    if (lo < 0 || hi < 0 || lo > hi || width <= 0)
+        return 0;
+    if (hi >= width) hi = width - 1;
+    if (lo > hi)
+        return 0;
+    const int span = hi - lo + 1;
+    return mask(span) << lo;
+}
+
+QString CalculatorModel::registerTooltip(const Reg &r, const QString &name) const
+{
+    const quint64 u = static_cast<quint64>(r.value) & mask(r.width);
+    const qint64 s = signedWithinWidth(u, r.width);
+    const QString hex = formatValue(u, s, Base::Hexadecimal, signed_, r.width);
+    const QString dec = formatValue(u, s, Base::Decimal, signed_, r.width);
+    const QString oct = formatValue(u, s, Base::Octal, signed_, r.width);
+    const QString bin = formatValue(u, s, Base::Binary, signed_, r.width);
+    return QStringLiteral("%1 (%2-bit)\nHEX: %3\nDEC: %4\nOCT: %5\nBIN: %6")
+        .arg(name).arg(r.width).arg(hex, dec, oct, bin);
 }
 
 qint64 CalculatorModel::parseBuffer() const

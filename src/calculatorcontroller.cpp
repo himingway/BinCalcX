@@ -18,6 +18,7 @@ CalculatorController::CalculatorController(CalculatorModel &model,
     connect(&view_, &CalculatorView::signedModeChanged, this, &CalculatorController::onSignedMode);
     connect(&view_, &CalculatorView::bitToggled,        this, &CalculatorController::onBitToggled);
     connect(&view_, &CalculatorView::bitWidthRequested, this, &CalculatorController::onBitWidthRequested);
+    connect(&view_, &CalculatorView::customBitWidthRequested, this, &CalculatorController::onCustomBitWidthRequested);
     connect(&view_, &CalculatorView::shiftRequested,    this, &CalculatorController::onShift);
     connect(&view_, &CalculatorView::themeToggled,      this, &CalculatorController::onTheme);
     connect(&view_, &CalculatorView::stayOnTopToggled,  this, &CalculatorController::onStayOnTop);
@@ -27,6 +28,21 @@ CalculatorController::CalculatorController(CalculatorModel &model,
     });
     connect(&view_, &CalculatorView::slicePushRequested, this, [this](int lo, int hi){
         model_.pushSlice(lo, hi);    // ENTER on a slice — push it to Y, X unchanged
+    });
+    connect(&view_, &CalculatorView::sliceSetRequested, this, [this](int lo, int hi){
+        model_.setBitRange(lo, hi);
+    });
+    connect(&view_, &CalculatorView::sliceClearRequested, this, [this](int lo, int hi){
+        model_.clearBitRange(lo, hi);
+    });
+    connect(&view_, &CalculatorView::sliceInvertRequested, this, [this](int lo, int hi){
+        model_.invertBitRange(lo, hi);
+    });
+    connect(&view_, &CalculatorView::sliceMaskRequested, this, [this](int lo, int hi){
+        model_.maskBitRange(lo, hi);
+    });
+    connect(&view_, &CalculatorView::stackRecallRequested, this, [this](int index){
+        model_.copyStackToX(index);
     });
     // Live slice preview on the X register: while a bit range is selected, X
     // shows that slice as a Verilog literal (width + value); X itself is unchanged.
@@ -42,6 +58,7 @@ CalculatorController::CalculatorController(CalculatorModel &model,
     // Model changes -> View refresh
     connect(&model_, &CalculatorModel::displayChanged,  this, &CalculatorController::refreshView);
     connect(&model_, &CalculatorModel::bitWidthChanged, this, &CalculatorController::onBitWidthChanged);
+    connect(&model_, &CalculatorModel::historyChanged,  &view_, &CalculatorView::setHistoryEnabled);
 
     restorePreferences();
     refreshView();
@@ -58,17 +75,32 @@ void CalculatorController::onDigit(const QString &digit)
 
 void CalculatorController::onCommand(const QString &command)
 {
-    if (command == "ENTER")      model_.enter();
-    else if (command == "CLX")   model_.clearX();
-    else if (command == "CLR")   model_.clearAll();
-    else if (command == "NEG")   model_.negate();
-    else if (command == "NOT")   model_.applyNot();
-    else if (command == "ROLL")  model_.rollDown();
-    else if (command == "SWAP")  model_.swapXY();
-    else if (command == "BSP")   model_.backspace();
+    if (command == "ENTER")       model_.enter();
+    else if (command == "CLX")    model_.clearX();
+    else if (command == "CLR")    model_.clearAll();
+    else if (command == "NEG")    model_.negate();
+    else if (command == "NOT")    model_.applyNot();
+    else if (command == "ROLL")   model_.rollDown();
+    else if (command == "SWAP")   model_.swapXY();
+    else if (command == "BSP")    model_.backspace();
     // hardware-grade ops
     else if (command == "CONCAT") model_.concatenate();
     else if (command == "REPL")   model_.replicate();
+    else if (command == "BSWAP")  model_.byteSwap();
+    else if (command == "BITREV") model_.bitReverse();
+    else if (command == "MASK")   model_.makeMask();
+    // history
+    else if (command == "UNDO") {
+        if (model_.canUndo()) {
+            model_.undo();
+            view_.setStatusMessage(tr("Undo"));
+        }
+    } else if (command == "REDO") {
+        if (model_.canRedo()) {
+            model_.redo();
+            view_.setStatusMessage(tr("Redo"));
+        }
+    }
 }
 
 void CalculatorController::onBinaryOp(const QString &opToken)
@@ -98,6 +130,11 @@ void CalculatorController::onBitToggled(int bit)
 void CalculatorController::onBitWidthRequested(int width)
 {
     model_.setBitWidth(width);   // model emits bitWidthChanged -> onBitWidthChanged
+}
+
+void CalculatorController::onCustomBitWidthRequested(int width)
+{
+    model_.setCustomBitWidth(width);
 }
 
 void CalculatorController::onBitWidthChanged(int width)
@@ -150,6 +187,7 @@ void CalculatorController::refreshView()
     view_.setBinaryText(model_.binaryString());
     view_.setCharText(model_.charString());
     view_.setStackValues(model_.stackStrings());
+    view_.setStackTooltips(model_.stackTooltips());
     // setStackValues just overwrote the X field with the full-register literal;
     // if a bit-range selection is active, re-assert its slice preview (computed
     // from the current model state, so it stays correct across base/value changes).
@@ -157,6 +195,7 @@ void CalculatorController::refreshView()
         view_.setXField(model_.sliceVerilogLiteral(selLo_, selHi_));
     view_.refreshBits(model_.xRegister());
     view_.setSignedMode(model_.signedMode());
+    view_.setHistoryEnabled(model_.canUndo(), model_.canRedo());
 }
 
 // ---------------------------------------------------------------------------
@@ -205,6 +244,9 @@ CalculatorModel::Op CalculatorController::toOp(const QString &token)
     if (token == "XOR") return CalculatorModel::Op::Xor;
     if (token == "SHL") return CalculatorModel::Op::Shl;
     if (token == "SHR") return CalculatorModel::Op::Shr;
+    if (token == "ROL") return CalculatorModel::Op::Rol;
+    if (token == "ROR") return CalculatorModel::Op::Ror;
+    if (token == "ASR") return CalculatorModel::Op::Asr;
     // Unknown token = View/Controller vocabulary drift — abort loudly in
     // debug builds instead of silently computing the wrong op.
     Q_ASSERT_X(false, "toOp", qPrintable(QStringLiteral("unknown op token: %1").arg(token)));
@@ -213,6 +255,7 @@ CalculatorModel::Op CalculatorController::toOp(const QString &token)
 
 CalculatorModel::Base CalculatorController::toBase(const QString &token)
 {
+    if (token == "BIN") return CalculatorModel::Base::Binary;
     if (token == "HEX") return CalculatorModel::Base::Hexadecimal;
     if (token == "DEC") return CalculatorModel::Base::Decimal;
     if (token == "OCT") return CalculatorModel::Base::Octal;
